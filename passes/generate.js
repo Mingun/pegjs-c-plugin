@@ -1,0 +1,488 @@
+var arrays  = require("../../pegjs2/lib/utils/arrays"),
+    objects = require("../../pegjs2/lib/utils/objects"),
+    asts    = require("../../pegjs2/lib/compiler/asts"),
+    visitor = require("../../pegjs2/lib/compiler/visitor"),
+    js      = require("../../pegjs2/lib/compiler/javascript");
+
+function generateCCode(ast) {
+/*
+  function addFunctionConst(namespace, params, code) {
+    var pList = params.join(',');
+    var index = arrays.indexOf(actions, function(f) {
+      return f.namespace === namespace
+          && f.params.join(',') === pList
+          && f.body === code;
+    });
+
+    return index < 0 ? actions.push({ namespace: namespace, params: params, body: code }) - 1 : index;
+  }
+
+  function buildCall(functionIndex, delta, env, sp) {
+    var params = arrays.map(objects.values(env), function(p) { return sp - p; });
+
+    return [op.CALL, functionIndex, delta, params.length].concat(params);
+  }
+*/
+  function buildSimplePredicate(expression, negative, context) {
+    context.pushCode(
+      context.pushPos(),
+      '++ctx->failInfo.silent'
+    );
+    generate(expression, context.child(context.sp + 1, objects.clone(context.env)));
+    var r = context.resultStack.pop();
+    var f = context.resultStack.push('&FAILED');
+    var p = context.popPos();
+    context.pushCode(
+      '--ctx->failInfo.silent',
+      'if (' + (negative ? '' : '!') + 'isFailed(' + r + ')) {'
+    );
+    if (negative) {
+      context.pushCode(
+        '  ' + r + ' = &NIL;',
+        '} else {',
+        '  freeResult(' + r + ');',
+        '  ' + p,
+        '  ' + f,
+        '}'
+      );
+    } else {
+      context.pushCode(
+        '  freeResult(' + r + ');',
+        '  ' + p,
+        '  ' + r + ' = &NIL;',
+        '} else {',
+        '  ' + f,
+        '}'
+      );
+    }
+  }
+/*
+  function buildSemanticPredicate(namespace, code, negative, context) {
+    var functionIndex = addFunctionConst(namespace, objects.keys(context.env), code);
+
+    return buildSequence(
+      [op.REPORT_CURR_POS],
+      buildCall(functionIndex, 0, context.env, context.sp),
+      buildCondition(
+        [op.IF],
+        buildSequence(
+          [op.POP],
+          negative ? [op.PUSH_FAILED] : [op.PUSH_UNDEFINED]
+        ),
+        buildSequence(
+          [op.POP],
+          negative ? [op.PUSH_UNDEFINED] : [op.PUSH_FAILED]
+        )
+      )
+    );
+  }
+*/
+  function makeStack(varName, type) {
+    function s(i) { return varName + i; }
+    return {
+      sp:    -1,
+      maxSp: -1,
+
+      push: function(exprCode) {
+        var code = s(++this.sp) + ' = ' + exprCode + ';';
+
+        if (this.sp > this.maxSp) { this.maxSp = this.sp; }
+
+        return code;
+      },
+
+      pop: function() {
+        var n, values;
+
+        if (arguments.length === 0) {
+          return s(this.sp--);
+        } else {
+          n = arguments[0];
+          values = arrays.map(arrays.range(this.sp - n + 1, this.sp + 1), s);
+          this.sp -= n;
+
+          return values;
+        }
+      },
+
+      top: function() { return s(this.sp); },
+
+      index: function(i) { return s(this.sp - i); },
+
+      vars: function() {
+        if (this.maxSp < 0) {
+          return '';
+        }
+        return type + ' ' + arrays.map(arrays.range(0, this.maxSp + 1), s).join(', ') + ';';
+      },
+      range: function(sp) {
+        console.log(sp, this.sp, this.maxSp)
+        return arrays.map(arrays.range(sp + 1, this.sp), s);
+      },
+      result: function() { return s(0); },
+    };
+  }
+
+  function makeConstantBuilder(varName, type, stringify) {
+    function n1(i) { return varName + i; }
+    function n2(v, i) { return type + ' ' + n1(i) + ' = ' + v + ';'; }
+    var storage = [];
+    return {
+      add: function(value) {
+        if (stringify) { value = stringify.apply(null, arguments); }
+        var index = storage.indexOf(value);
+
+        return n1(index < 0 ? storage.push(value) - 1 : index);
+      },
+      vars: function() { return storage.map(n2); },
+    };
+  }
+
+  function makeContext(code) {
+    var resultStack = makeStack('r', 'struct Result*');
+    var posStack    = makeStack('p', 'struct Pos');
+
+    var _indent = [];
+    var _indentCache = '';
+
+    function pushCode() {
+      for (var i = 0; i < arguments.length; ++i) {
+        var arg = arguments[i];
+        // Генерируем отступы только для непустых строк
+        code.push(arg.length > 0 ? _indentCache + arg : arg);
+      }
+    }
+    function indent() {
+      // Перед отступом можно опционально добавить какой-то код
+      pushCode.apply(null, arguments);
+      _indent.push('  ');
+      _indentCache = _indent.join('');
+    }
+    function dedent() {
+      _indent.pop();
+      _indentCache = _indent.join('');
+      // После отступа можно опционально добавить какой-то код
+      pushCode.apply(null, arguments);
+    }
+    function pushPos() {
+      // Эта функция сгенерирует некорректный код для C, поэтому ничего в нее
+      // не передаем. Нам важно только то, что сейчас увеличится указатель стека.
+      posStack.push();
+      return 'clonePos(&' + posStack.top() + ', &ctx->current);';
+    }
+    function popPos() {
+      return 'clonePos(&ctx->current, &' + posStack.pop() + ');';
+    }
+    function make(sp, env) {
+      return {
+        sp:     sp,    // stack pointer
+        env:    env,   // mapping of label names to stack positions
+        action: null,  // action nodes pass themselves to children here
+
+        resultStack: resultStack,
+        posStack: posStack,
+
+        pushCode: pushCode,
+        indent: indent,
+        dedent: dedent,
+
+        child: make,
+
+        pushPos: pushPos,
+        popPos:  popPos,
+      };
+    }
+    return make(-1, {});
+  }
+
+  function generateRange(expression, context, min, max) {
+    // Если задан минимум, то может понадобится откатится в начало правила, поэтому
+    // запоминаем текущую позицию. Однако, если минимум равен 0, то фактически его нет
+    // поэтому в этом случае никакого запоминания не требуется.
+    var hasMin = min && min !== 0;
+    if (hasMin) {
+      context.pushCode(context.pushPos());
+    }
+    context.pushCode(context.resultStack.push('createArray()'));
+    var arr = context.resultStack.top();
+    context.indent('do {');
+    // Если задан максимум, генерируем проверку максимума
+    if (max) {
+      context.pushCode('if (length(' + arr + ') >= ' + max + ') { break; }');
+    }
+    generate(expression, context.child(context.sp + 1, objects.clone(context.env)));
+    context.pushCode('if (isFailed(' + context.resultStack.top() + ')) { break; }');
+    context.pushCode('append(' + arr + ', ' + context.resultStack.pop() + ');');
+    context.dedent('} while (true);');
+    // Если задан максимум, генерируем проверку минимума
+    if (hasMin) {
+      context.resultStack.pop();
+      context.pushCode(
+        'if (length(' + arr + ') < ' + min + ') {',
+        '  ' + context.popPos(),
+        '  freeResult(' + arr + ');',
+        '  ' + context.resultStack.push('&FAILED'),
+        '}'
+      );
+    }
+  }
+  /// Возвращает имя функции, разбирающей правило с указанным именем.
+  function r(name) { return '_parse' + name; }
+
+  function createLookupTable(ruleNames) {
+    var entries = ruleNames.sort().map(function(n) {
+      return '  { ' + n.length + ', "' + n + '", &' + r(n) + ' }';
+    });
+    return [
+      'static ParseFunc funcs[] = {',
+      entries.join(',\n'),
+      '};',
+    ];
+  }
+
+  var escape = js.stringEscape;
+  var literals    = makeConstantBuilder('l', 'static struct Literal', function(v) {
+    return '{ ' + v.length + ', "' + escape(v) + '" }';
+  });
+  var charClasses = makeConstantBuilder('c', 'static struct CharClass', function(parts) {
+    var single = parts.filter(function(p){return !(p instanceof Array);}).join('');
+    var ranges = parts.filter(function(p){return (p instanceof Array);}).map(function(p) { return p.join(''); });
+
+    return [
+      '{',
+      '  MAKE_LENGTHS(' + single.length + ', ' + ranges.length + '),',
+      '  "' + single + '",',
+      '  "' + ranges.join('') + '"',
+      '}',
+    ].join('\n');
+  });
+  var expected    = makeConstantBuilder('e', 'static struct Expected', function(type, value, description) {
+    return '{ E_EX_TYPE_' + type + ', "' + escape(description) + '" }';
+  });
+
+  var generate = visitor.build({
+    grammar: function(node) {
+      var rules = node.rules.map(function(r) {
+        return generate(r).join('\n')
+      });
+
+      var code = [
+      '#define MAKE_LENGTHS(_1, _2) (((_1) << (sizeof(((struct CharClass*)0)->counts)*4)) | (_2))',
+      '#define isFailed(r) ((r) == &FAILED)',
+      '#define length(r) ((r)->count)',
+      ];
+      Array.prototype.push.apply(code, literals.vars());
+      code.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      Array.prototype.push.apply(code, charClasses.vars());
+      code.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      Array.prototype.push.apply(code, expected.vars());
+      code.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      Array.prototype.push.apply(code, rules);
+      code.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      code.push('PARSER_API struct Result* parse(struct Range* input) {'),
+      // Создаем таблицу для поиска правил разбора по имени.
+      Array.prototype.push.apply(code, createLookupTable(node.rules.map(function(r) {return r.name})));
+      code.push('}');
+      
+      code.push(
+      '#undef length',
+      '#undef isFailed',
+      '#undef MAKE_LENGTHS'
+      );
+      return code.join('\n');
+
+      createLookupTable
+    },
+
+    rule: function(node) {
+      var code = [
+        'INTERNAL static struct Result* ' + r(node.name) + '(struct Context* ctx) {',
+        '  ',// зарезервировано для переменных из стека результатов
+        '  ',// зарезервировано для переменных из стека позиций
+        '',
+      ];
+      var context = makeContext(code);
+      context.indent();
+      generate(node.expression, context);
+      context.dedent(
+        '  return ' + context.resultStack.result() + ';',
+        '}'
+      );
+      code[1] += context.resultStack.vars();
+      code[2] += context.posStack.vars();
+      return code;
+    },
+
+    named: function(node, context) {
+      var e = expected.add('OTHER', null, node.name);
+
+      context.pushCode('++ctx->failInfo.silent;');
+      generate(node.expression, context),
+      context.pushCode(
+        '--ctx->failInfo.silent;',
+        'if (isFailed(' + context.resultStack.top() + ')) {',
+        '  ' + context.resultStack.push('fail(ctx, &' + e + ')'),
+        '}'
+      );
+    },
+
+    choice: function(node, context) {
+      context.indent('do {');
+      node.alternatives.forEach(function(n, i, a) {
+        // Для каждой альтернативы набор переменных свой
+        generate(n, context.child(context.sp, objects.clone(context.env)));
+        // Если элемент не последний в массиве, то генерируем проверку
+        if (i+1 < a.length) {
+          context.pushCode('if (!isFailed(' + context.resultStack.pop() + ')) { break; }', '');
+        }
+      });
+      context.dedent('} while (false);');
+    },
+
+    sequence: function(node, context) {
+      context.pushCode(context.pushPos());
+      context.indent('do {');
+      var first;
+      var sp = context.resultStack.sp;
+      node.elements.forEach(function(n, i) {
+        // Для всех элементов последовательности набор переменных одинаковый.
+        generate(n, context.child(context.sp + i + 1, context.env));
+        if (i === 0) {
+          first = context.resultStack.top();
+        }
+        // Если разбор очередного элемента не удался, восстанавливаем позицию
+        // и прекращаем анализ прочих элементов последовательности.
+        context.pushCode(
+          'if (isFailed(' + context.resultStack.top() + ')) {'
+        );
+        context.pushCode.apply(context,
+          context.resultStack.range(sp).map(function(r) { return '  freeResult(' + r + ');'; })
+        );
+        context.pushCode(
+          '  clonePos(&ctx->current, &' + context.posStack.top() + ');',
+          '  ' + first + ' = &FAILED;',
+          '  break;',
+          '}',
+          ''
+        );
+      });
+      var elems = context.resultStack.pop(node.elements.length).join(', ');
+      context.pushCode(context.resultStack.push(
+        'wrap(ctx, ' + context.posStack.pop() + ', ' + node.elements.length + ', ' + elems + ')'
+      ));
+      context.dedent('} while (false);');
+    },
+
+    labeled: function(node, context) {
+      context.env[node.label] = context.sp + 1;
+
+      return generate(node.expression, context.child(context.sp, objects.clone(context.env)));
+    },
+
+    text: function(node, context) {
+      context.pushCode(context.pushPos());
+      // Внутри $ новый scope переменных.
+      generate(node.expression, context.child(context.sp + 1, objects.clone(context.env)));
+      context.pushCode(
+        'if (!isFailed(' + context.resultStack.pop() + ')) {',
+        '  ' + context.resultStack.push('_text(ctx, ' + context.posStack.pop() + ')'),
+        '}'
+      );
+    },
+
+    optional: function(node, context) {
+      generate(node.expression, context.child(context.sp, objects.clone(context.env)));
+      context.pushCode(
+        'if (isFailed(' + context.resultStack.pop() + ')) { ' + context.resultStack.push('&NIL') + ' }'
+      );
+    },
+
+    zero_or_more: function(node, context) {
+      generateRange(node.expression, context, 0, null);
+    },
+
+    one_or_more: function(node, context) {
+      generateRange(node.expression, context, 1, null);
+    },
+
+    range: function(node, context) {
+      generateRange(node.expression, context, node.min, node.max, node.delimiter);
+    },
+
+    simple_and: function(node, context) {
+      return buildSimplePredicate(node.expression, false, context);
+    },
+
+    simple_not: function(node, context) {
+      return buildSimplePredicate(node.expression, true, context);
+    },
+/*
+    semantic_and: function(node, context) {
+      return buildSemanticPredicate(node.namespace, node.code, false, context);
+    },
+
+    semantic_not: function(node, context) {
+      return buildSemanticPredicate(node.namespace, node.code, true, context);
+    },
+
+    action: function(node, context) {
+      var env            = objects.clone(context.env),
+          emitCall       = node.expression.type !== "sequence"
+                        || node.expression.elements.length === 0,
+          expressionCode = generate(node.expression, {
+            sp:     context.sp + (emitCall ? 1 : 0),
+            env:    env,
+            action: node
+          }),
+          functionIndex  = addFunctionConst(node.namespace, objects.keys(env), node.code);
+
+      return emitCall
+        ? buildSequence(
+            [op.PUSH_CURR_POS],
+            expressionCode,
+            buildCondition(
+              [op.IF_NOT_ERROR],
+              buildSequence(
+                [op.REPORT_SAVED_POS, 1],
+                buildCall(functionIndex, 1, env, context.sp + 2)
+              ),
+              []
+            ),
+            [op.NIP]
+          )
+        : expressionCode;
+    },
+*/
+    rule_ref: function(node, context) {
+      // Помещаем результат разбора правила на вершину стека результатов.
+      context.pushCode(context.resultStack.push(r(node.name) + '(ctx)'));
+    },
+
+    literal: function(node, context) {
+      var v = literals.add(node.value);
+      var e = expected.add(
+        'LITERAL',
+        node.ignoreCase ? node.value.toLowerCase() : node.value,
+        '"' + escape(node.value) + '"'
+      );
+      // Помещаем результат разбора класса символов на вершину стека результатов.
+      context.pushCode(context.resultStack.push('parseLiteral(ctx, &' + v + ', &' + e + ')'));
+    },
+
+    "class": function(node, context) {
+      var v = charClasses.add(node.parts);
+      var e = expected.add('CLASS', node.rawText, node.rawText);
+      // Помещаем результат разбора класса символов на вершину стека результатов.
+      context.pushCode(context.resultStack.push('parseCharClass(ctx, &' + v + ', &' + e + ')'));
+    },
+
+    any: function(node, context) {
+      // Помещаем результат разбора any на вершину стека результатов.
+      context.pushCode(context.resultStack.push('parseAny(ctx)'));
+    }
+  });
+
+  console.log(generate(ast));
+}
+
+module.exports = generateCCode;
