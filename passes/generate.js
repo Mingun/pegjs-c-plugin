@@ -5,78 +5,6 @@ var arrays  = require("../../pegjs2/lib/utils/arrays"),
     js      = require("../../pegjs2/lib/compiler/javascript");
 
 function generateCCode(ast) {
-/*
-  function addFunctionConst(namespace, params, code) {
-    var pList = params.join(',');
-    var index = arrays.indexOf(actions, function(f) {
-      return f.namespace === namespace
-          && f.params.join(',') === pList
-          && f.body === code;
-    });
-
-    return index < 0 ? actions.push({ namespace: namespace, params: params, body: code }) - 1 : index;
-  }
-
-  function buildCall(functionIndex, delta, env, sp) {
-    var params = arrays.map(objects.values(env), function(p) { return sp - p; });
-
-    return [op.CALL, functionIndex, delta, params.length].concat(params);
-  }
-*/
-  function buildSimplePredicate(expression, negative, context) {
-    context.pushCode(
-      context.pushPos(),
-      '++ctx->failInfo.silent'
-    );
-    generate(expression, context.child(context.sp + 1, objects.clone(context.env)));
-    var r = context.resultStack.pop();
-    var f = context.resultStack.push('&FAILED');
-    var p = context.popPos();
-    context.pushCode(
-      '--ctx->failInfo.silent',
-      'if (' + (negative ? '' : '!') + 'isFailed(' + r + ')) {'
-    );
-    if (negative) {
-      context.pushCode(
-        '  ' + r + ' = &NIL;',
-        '} else {',
-        '  freeResult(' + r + ');',
-        '  ' + p,
-        '  ' + f,
-        '}'
-      );
-    } else {
-      context.pushCode(
-        '  freeResult(' + r + ');',
-        '  ' + p,
-        '  ' + r + ' = &NIL;',
-        '} else {',
-        '  ' + f,
-        '}'
-      );
-    }
-  }
-/*
-  function buildSemanticPredicate(namespace, code, negative, context) {
-    var functionIndex = addFunctionConst(namespace, objects.keys(context.env), code);
-
-    return buildSequence(
-      [op.REPORT_CURR_POS],
-      buildCall(functionIndex, 0, context.env, context.sp),
-      buildCondition(
-        [op.IF],
-        buildSequence(
-          [op.POP],
-          negative ? [op.PUSH_FAILED] : [op.PUSH_UNDEFINED]
-        ),
-        buildSequence(
-          [op.POP],
-          negative ? [op.PUSH_UNDEFINED] : [op.PUSH_FAILED]
-        )
-      )
-    );
-  }
-*/
   function makeStack(varName, type) {
     function s(i) { return varName + i; }
     return {
@@ -105,6 +33,11 @@ function generateCCode(ast) {
         }
       },
 
+      replace: function(exprCode) {
+        this.pop();
+        return this.push(exprCode);
+      },
+
       top: function() { return s(this.sp); },
 
       index: function(i) { return s(this.sp - i); },
@@ -122,7 +55,6 @@ function generateCCode(ast) {
       result: function() { return s(0); },
     };
   }
-
   function makeConstantBuilder(varName, type, stringify) {
     function n1(i) { return varName + i; }
     function n2(v, i) { return type + ' ' + n1(i) + ' = ' + v + ';'; }
@@ -137,7 +69,29 @@ function generateCCode(ast) {
       vars: function() { return storage.map(n2); },
     };
   }
+  function makeFunctionBuilder(varName, retType, argType) {
+    function n1(i, args) { return varName + i + '(' + args.join(', ') + ')'; }
+    function n2(v, i) { return retType + ' ' + n1(i, v.params.map(function(p) { return argType + ' ' + p; })); }
+    var storage = [];
+    return {
+      add: function(namespace, params, code) {
+        var pList = params.join(',');
+        var index = arrays.indexOf(storage, function(f) {
+          return f.namespace === namespace
+              && f.params.join(',') === pList
+              && f.body === code;
+        });
 
+        return n1(index < 0 ? storage.push({ namespace: namespace, params: params, body: code }) - 1 : index, params);
+      },
+
+      declares: function() { return storage.map(function(v, i) { return n2(v, i) + ';'; }); },
+
+      defines: function() {
+        return storage.map(function(v, i) { return n2(v, i) + ' {' + v.body + '}'; });
+      },
+    };
+  }
   function makeContext(code) {
     var resultStack = makeStack('r', 'struct Result*');
     var posStack    = makeStack('p', 'struct Pos');
@@ -173,11 +127,11 @@ function generateCCode(ast) {
     function popPos() {
       return 'clonePos(&ctx->current, &' + posStack.pop() + ');';
     }
-    function make(sp, env) {
+    function make(sp, env, action) {
       return {
         sp:     sp,    // stack pointer
         env:    env,   // mapping of label names to stack positions
-        action: null,  // action nodes pass themselves to children here
+        action: action,// action nodes pass themselves to children here
 
         resultStack: resultStack,
         posStack: posStack,
@@ -192,9 +146,53 @@ function generateCCode(ast) {
         popPos:  popPos,
       };
     }
-    return make(-1, {});
+    return make(-1, {}, null);
   }
 
+  function generateSimplePredicate(expression, negative, context) {
+    context.pushCode(
+      context.pushPos(),
+      '++ctx->failInfo.silent'
+    );
+    generate(expression, context.child(context.sp + 1, objects.clone(context.env), null));
+    var r = context.resultStack.pop();
+    var f = context.resultStack.push('&FAILED');
+    var p = context.popPos();
+    context.pushCode(
+      '--ctx->failInfo.silent',
+      'if (' + (negative ? '' : '!') + 'isFailed(' + r + ')) {'
+    );
+    if (negative) {
+      context.pushCode(
+        '  ' + r + ' = &NIL;',
+        '} else {',
+        '  freeResult(' + r + ');',
+        '  ' + p,
+        '  ' + f,
+        '}'
+      );
+    } else {
+      context.pushCode(
+        '  freeResult(' + r + ');',
+        '  ' + p,
+        '  ' + r + ' = &NIL;',
+        '} else {',
+        '  ' + f,
+        '}'
+      );
+    }
+  }
+  function generateSemanticPredicate(namespace, code, negative, context) {
+    var f = context.resultStack.push('&FAILED');
+    var n = context.resultStack.replace('&NIL');
+    context.pushCode(
+      'if (' + (negative ? '!' : '') + predicates.add(namespace, objects.keys(context.env), code) + ') {',
+      '  ' + (negative ? f : n),
+      '} else {',
+      '  ' + (negative ? n : f),
+      '}'
+    );
+  }
   function generateRange(expression, context, min, max) {
     // Если задан минимум, то может понадобится откатится в начало правила, поэтому
     // запоминаем текущую позицию. Однако, если минимум равен 0, то фактически его нет
@@ -210,7 +208,7 @@ function generateCCode(ast) {
     if (max) {
       context.pushCode('if (length(' + arr + ') >= ' + max + ') { break; }');
     }
-    generate(expression, context.child(context.sp + 1, objects.clone(context.env)));
+    generate(expression, context.child(context.sp + 1, objects.clone(context.env), null));
     context.pushCode('if (isFailed(' + context.resultStack.top() + ')) { break; }');
     context.pushCode('append(' + arr + ', ' + context.resultStack.pop() + ');');
     context.dedent('} while (true);');
@@ -259,6 +257,8 @@ function generateCCode(ast) {
   var expected    = makeConstantBuilder('e', 'static struct Expected', function(type, value, description) {
     return '{ E_EX_TYPE_' + type + ', "' + escape(description) + '" }';
   });
+  var predicates  = makeFunctionBuilder('is', 'int', 'struct Result*');
+  var actions     = makeFunctionBuilder('f', 'void', 'struct Result*');
 
   var generate = visitor.build({
     grammar: function(node) {
@@ -277,21 +277,23 @@ function generateCCode(ast) {
       code.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
       Array.prototype.push.apply(code, expected.vars());
       code.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      Array.prototype.push.apply(code, predicates.defines());
+      code.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      Array.prototype.push.apply(code, actions.defines());
+      code.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
       Array.prototype.push.apply(code, rules);
       code.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
       code.push('PARSER_API struct Result* parse(struct Range* input) {'),
       // Создаем таблицу для поиска правил разбора по имени.
       Array.prototype.push.apply(code, createLookupTable(node.rules.map(function(r) {return r.name})));
       code.push('}');
-      
+
       code.push(
       '#undef length',
       '#undef isFailed',
       '#undef MAKE_LENGTHS'
       );
       return code.join('\n');
-
-      createLookupTable
     },
 
     rule: function(node) {
@@ -330,7 +332,7 @@ function generateCCode(ast) {
       context.indent('do {');
       node.alternatives.forEach(function(n, i, a) {
         // Для каждой альтернативы набор переменных свой
-        generate(n, context.child(context.sp, objects.clone(context.env)));
+        generate(n, context.child(context.sp, objects.clone(context.env), null));
         // Если элемент не последний в массиве, то генерируем проверку
         if (i+1 < a.length) {
           context.pushCode('if (!isFailed(' + context.resultStack.pop() + ')) { break; }', '');
@@ -346,7 +348,7 @@ function generateCCode(ast) {
       var sp = context.resultStack.sp;
       node.elements.forEach(function(n, i) {
         // Для всех элементов последовательности набор переменных одинаковый.
-        generate(n, context.child(context.sp + i + 1, context.env));
+        generate(n, context.child(context.sp + i + 1, context.env, null));
         if (i === 0) {
           first = context.resultStack.top();
         }
@@ -366,23 +368,31 @@ function generateCCode(ast) {
           ''
         );
       });
-      var elems = context.resultStack.pop(node.elements.length).join(', ');
-      context.pushCode(context.resultStack.push(
-        'wrap(ctx, ' + context.posStack.pop() + ', ' + node.elements.length + ', ' + elems + ')'
-      ));
+      var elems = context.resultStack.pop(node.elements.length);
+      var beginPos = context.posStack.pop();
+      if (context.action) {
+        context.pushCode(actions.add(
+          context.action.namespace,
+          objects.keys(context.env),
+          context.action.code
+        ) + ';');
+      }/* else */{// TODO: На данный момент изменение возвращаемого значения действиями не поддерживается.
+        elems.unshift('ctx', beginPos, elems.length);
+        context.pushCode(context.resultStack.push('wrap(' + elems.join(', ') + ')')); 
+      }
       context.dedent('} while (false);');
     },
 
     labeled: function(node, context) {
       context.env[node.label] = context.sp + 1;
 
-      return generate(node.expression, context.child(context.sp, objects.clone(context.env)));
+      return generate(node.expression, context.child(context.sp, objects.clone(context.env), null));
     },
 
     text: function(node, context) {
       context.pushCode(context.pushPos());
       // Внутри $ новый scope переменных.
-      generate(node.expression, context.child(context.sp + 1, objects.clone(context.env)));
+      generate(node.expression, context.child(context.sp + 1, objects.clone(context.env), null));
       context.pushCode(
         'if (!isFailed(' + context.resultStack.pop() + ')) {',
         '  ' + context.resultStack.push('_text(ctx, ' + context.posStack.pop() + ')'),
@@ -391,7 +401,7 @@ function generateCCode(ast) {
     },
 
     optional: function(node, context) {
-      generate(node.expression, context.child(context.sp, objects.clone(context.env)));
+      generate(node.expression, context.child(context.sp, objects.clone(context.env), null));
       context.pushCode(
         'if (isFailed(' + context.resultStack.pop() + ')) { ' + context.resultStack.push('&NIL') + ' }'
       );
@@ -416,43 +426,34 @@ function generateCCode(ast) {
     simple_not: function(node, context) {
       return buildSimplePredicate(node.expression, true, context);
     },
-/*
+
     semantic_and: function(node, context) {
-      return buildSemanticPredicate(node.namespace, node.code, false, context);
+      return generateSemanticPredicate(node.namespace, node.code, false, context);
     },
 
     semantic_not: function(node, context) {
-      return buildSemanticPredicate(node.namespace, node.code, true, context);
+      return generateSemanticPredicate(node.namespace, node.code, true, context);
     },
 
     action: function(node, context) {
-      var env            = objects.clone(context.env),
-          emitCall       = node.expression.type !== "sequence"
-                        || node.expression.elements.length === 0,
-          expressionCode = generate(node.expression, {
-            sp:     context.sp + (emitCall ? 1 : 0),
-            env:    env,
-            action: node
-          }),
-          functionIndex  = addFunctionConst(node.namespace, objects.keys(env), node.code);
+      var env = objects.clone(context.env);
+      // Для того, чтобы не генерировать лишний вызов wrap у последовательности элементов, вызов
+      // функции генерируется прямо в последовательности, ВМЕСТО wrap.
+      var emitCall = node.expression.type !== "sequence";
 
-      return emitCall
-        ? buildSequence(
-            [op.PUSH_CURR_POS],
-            expressionCode,
-            buildCondition(
-              [op.IF_NOT_ERROR],
-              buildSequence(
-                [op.REPORT_SAVED_POS, 1],
-                buildCall(functionIndex, 1, env, context.sp + 2)
-              ),
-              []
-            ),
-            [op.NIP]
-          )
-        : expressionCode;
+      if (emitCall) {
+        context.pushPos();
+      }
+      generate(node.expression, context.child(context.sp, env, node));
+      if (emitCall) {
+        context.pushCode(
+          'if (!isFailed(' + context.resultStack.top() + ')) {',
+          '  ' + actions.add(node.namespace, objects.keys(env), node.code) + ';',
+          '}'
+        );
+      }
     },
-*/
+
     rule_ref: function(node, context) {
       // Помещаем результат разбора правила на вершину стека результатов.
       context.pushCode(context.resultStack.push(r(node.name) + '(ctx)'));
