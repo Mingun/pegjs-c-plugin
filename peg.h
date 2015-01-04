@@ -1,8 +1,10 @@
-/** @file С89-совместимый заголовочный файл для генератора парсеров. */
+/** @file С89-совместимый заголовочный файл для генератора парсеров.
+    `gcc -pedantic -ansi -std=c89` не должен выдавать никаких предупреждений.
+*/
 
 /* Для memcmp. */
 #include <string.h>
-/* Для malloc/calloc/free. */
+/* Для malloc/calloc/free/bsearch. */
 #include <stdlib.h>
 /* Для va_*, используемых в функции wrap. */
 #include <stdarg.h>
@@ -34,7 +36,7 @@ struct Result {
   /** Количество потомков данного узла. */
   unsigned int count;
   /** Указатель на потомков данного узла. */
-  struct Result* childs;
+  struct Result** childs;
 };
 /** Содержит позицию в разбираемых данных, как в виде смещения в байтах от начала строки,
     так и в виде номеров строки и столбца.
@@ -59,11 +61,11 @@ enum E_EXPECTED_TYPE {
   /** Ожидается окончание потока данных. */
   E_EX_TYPE_EOF,
   /** Пользовательское сообщение об ожидаемых данных. */
-  E_EX_TYPE_USER,
+  E_EX_TYPE_USER
 };
 struct Expected {
   enum E_EXPECTED_TYPE type;
-  char message[0];
+  const char* message;
 };
 struct FailInfo {
   unsigned int silent;
@@ -81,6 +83,8 @@ struct Context {
   struct Pos current;
   /** Информация об ошибках разбора. */
   struct FailInfo failInfo;
+  /** Информация, передаваемая пользователем в парсер. Парсером не используется. */
+  void* options;
 };
 struct Literal {
   /** Длина литерала (массива data). */
@@ -124,9 +128,11 @@ static struct Result NIL    = {{0, 0}, 0, 0};
 /* Процедуры сопоставления. */
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 int matchLiteral(struct Context* context, const struct Literal* literal) {
-  const char* begin = context->input.begin + context->current.offset;
-  const unsigned int inputLen = context->input.end - begin;
-  /** Если входная строка короче, то она точно не равна литералу. */
+  const char* begin;
+  unsigned int inputLen;
+  begin = context->input.begin + context->current.offset;
+  inputLen = context->input.end - begin;
+  /* Если входная строка короче, то она точно не равна литералу. */
   return inputLen < literal->len ? 0 : memcmp(begin, literal->data, literal->len) == 0;
 }
 /**
@@ -135,25 +141,34 @@ int matchLiteral(struct Context* context, const struct Literal* literal) {
 @param count Количество элементов в массиве @a ranges.
 */
 int matchCharClass(struct Context* context, struct CharClass* cls) {
+  const char* begin;
   assert(context);
   assert(context->input.begin);
   assert(cls);
   assert(cls->single);
   assert(cls->range);
-  const char* begin = context->input.begin + context->current.offset;
+
+  begin = context->input.begin + context->current.offset;
 
   /* Если мы еще не в конце входных данных, то пытаемся сматчить текущий символ. */
   if (begin < context->input.end) {
     /* Выделяем нижнюю половину бит числа с помощью  маски. Верхнюю половину получаем, просто
     отодвинув ненужную нижнюю половину. */
-    const unsigned int countLO = cls->counts & ((~0u) >> (sizeof(cls->counts)*4));
-    const unsigned int countHI = cls->counts >> (sizeof(cls->counts)*4);
-    const char ch = begin[0];
+    unsigned int countLO;
+    unsigned int countHI;
+    char ch;
     unsigned int i;
+
+    countLO = cls->counts & ((~0u) >> (sizeof(cls->counts)*4));
+    countHI = cls->counts >> (sizeof(cls->counts)*4);
+    ch = begin[0];
     /* Класс символов является списком пар, задающих диапазоны символов. */
     for (i = 0; i < countLO; ++i) {
-      const char b = cls->range[i*2];
-      const char e = cls->range[i*2 + 1];
+      char b;
+      char e;
+
+      b = cls->range[i*2];
+      e = cls->range[i*2 + 1];
       /* Строгая проверка, т.к. если начало и конец совпадают, то это единственный символ
       и он должен быть в cls->single. */
       assert(b < e);
@@ -319,4 +334,24 @@ struct Result* wrap(struct Context* context, unsigned int pos, unsigned int coun
 
   va_end(results);
   return r;
-};
+}
+static int findRuleCompatator(const struct Range* name, const struct ParseFunc* entry) {
+  unsigned int len;
+  assert(name);
+  assert(name->begin);
+  assert(name->end);
+  assert(entry);
+  len = name->end - name->begin;
+  if (len < entry->len) { return -1; }
+  if (len > entry->len) { return +1; }
+  return memcmp(name->begin, entry->name, len);
+}
+const struct ParseFunc* findRule(const struct ParseFunc* table, size_t count, const struct Range* name) {
+  typedef int (*Comparator)(const void*, const void*);
+  assert(table);
+  assert(name);
+  return (const struct ParseFunc*)bsearch(
+    name, table, count, sizeof(table[0]),
+    (Comparator)&findRuleCompatator
+  );
+}

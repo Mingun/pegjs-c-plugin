@@ -101,7 +101,11 @@ function generateCCode(ast) {
   }
   function makeFunctionBuilder(varName, retType, argType) {
     function n1(i, args) { return varName + i + '(' + args.join(', ') + ')'; }
-    function n2(v, i) { return retType + ' ' + n1(i, v.params.map(function(p) { return argType + ' ' + p; })); }
+    function n2(v, i) {
+      var p = v.params.map(function(p) { return argType + ' ' + p; });
+      p.unshift('struct Context* context');
+      return retType + ' ' + n1(i, p);
+    }
     var storage = [];
     return {
       add: function(namespace, params, code, args) {
@@ -112,6 +116,7 @@ function generateCCode(ast) {
               && f.body === code;
         });
 
+        args.unshift('ctx');
         return n1(index < 0 ? storage.push({ namespace: namespace, params: params, body: code }) - 1 : index, args);
       },
 
@@ -285,23 +290,73 @@ function generateCCode(ast) {
       ];
       var builder = new CodeBuilder(code);
       builder.pushAll(literals.vars());
-      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      builder.push('/*~~~~~~~~~~~~~~~~~~~~ CHAR CLASSES ~~~~~~~~~~~~~~~~~~~~~*/');
       builder.pushAll(charClasses.vars());
-      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      builder.push('/*~~~~~~~~~~~~~~~~ EXPECTED DEFINITIONS ~~~~~~~~~~~~~~~~~*/');
       builder.pushAll(expected.vars());
-      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      builder.push('/*~~~~~~~~~~~~~~ RULE FORWARD DECLARATIONS ~~~~~~~~~~~~~~*/');
       builder.pushAll(node.rules.map(function(r) { return rDef(r) + ';'; }));
-      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      builder.push('/*~~~~~~~~~~~~~~~~~~~~~ PREDICATES ~~~~~~~~~~~~~~~~~~~~~~*/');
       builder.pushAll(predicates.defines());
-      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~ ACTIONS ~~~~~~~~~~~~~~~~~~~~~~~*/');
       builder.pushAll(actions.defines());
-      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~ RULES ~~~~~~~~~~~~~~~~~~~~~~~~*/');
       builder.pushAll(rules);
       builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
-      builder.indent('PARSER_API struct Result* parse(struct Range* input) {');
+      builder.indent('PARSER_API struct Result* parse(struct Range* input, struct Range* startRule, void* options) {');
       // Создаем таблицу для поиска правил разбора по имени.
       builder.pushAll(createLookupTable(node.rules.map(function(r) { return r.name; })));
+      builder.push(
+        'struct Context ctx = {',
+        '  { 0, 0 },',
+        '  { 0, 1, 1 },',
+        '  { 0, { 0, 1, 1 }, 0, 0 },',
+        '  0',
+        '};',
+        'ctx.input.begin = input->begin;',
+        'ctx.input.end = input->end;',
+        'ctx.options = options;',
+        'if (startRule) {',
+        '  const struct ParseFunc* func = findRule(funcs, sizeof(funcs) / sizeof(funcs[0]), startRule);',
+        '  if (func == 0) { return 0; }',
+        '  return (*func->func)(&ctx);',
+        '}',
+        'return ' + (node.rules.length > 0 ? (r(node.rules[0].name) + '(&ctx)') : '0')+ ';'
+      );
       builder.dedent('}');
+      builder.push(
+        'PARSER_API struct Result* parse2(const char* input, unsigned int len, struct Range* startRule, void* options) {',
+        '  struct Range r;',
+        '  r.begin = input;',
+        '  r.end   = input + len;',
+        '  return parse(&r, startRule, options);',
+        '}'
+      );
+      builder.push(
+        'PARSER_API struct Result* parse3(struct Range* input, const char* startRule, unsigned int len, void* options) {',
+        '  if (startRule) {',
+        '    struct Range s;',
+        '    s.begin = startRule;',
+        '    s.end = startRule + len;',
+        '    return parse(input, &s, options);',
+        '  }',
+        '  return parse(input, 0, options);',
+        '}'
+      );
+      builder.push(
+        'PARSER_API struct Result* parse4(const char* input, unsigned int inputLen, const char* startRule, unsigned int startRuleLen, void* options) {',
+        '  struct Range r;',
+        '  r.begin = input;',
+        '  r.end   = input + inputLen;',
+        '  if (startRule) {',
+        '    struct Range s;',
+        '    s.begin = startRule;',
+        '    s.end = startRule + startRuleLen;',
+        '    return parse(&r, &s, options);',
+        '  }',
+        '  return parse(&r, 0, options);',
+        '}'
+      );
 
       code.push(
       '#undef length',
