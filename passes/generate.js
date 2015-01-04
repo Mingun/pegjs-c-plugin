@@ -272,7 +272,7 @@ function generateCCode(ast) {
     ].join('\n');
   });
   var expected    = makeConstantBuilder('e', 'static struct Expected', function(type, value, description) {
-    return '{ E_EX_TYPE_' + type + ', "' + escape(description) + '" }';
+    return '{ MAKE_TYPEANDLEN(E_EX_TYPE_' + type + ', ' + description.length + '), "' + escape(description) + '" }';
   });
   var predicates  = makeFunctionBuilder('is', 'int', 'struct Result*');
   var actions     = makeFunctionBuilder('f', 'void', 'struct Result*');
@@ -284,22 +284,28 @@ function generateCCode(ast) {
       });
 
       var code = [
-      '#define MAKE_LENGTHS(_1, _2) (((_1) << (sizeof(((struct CharClass*)0)->counts)*4)) | (_2))',
       '#define isFailed(r) ((r) == &FAILED)',
-      '#define length(r) ((r)->count)',
+      '#define length(r) ((r)->count)'
       ];
       var builder = new CodeBuilder(code);
-      builder.pushAll(literals.vars());
-      builder.push('/*~~~~~~~~~~~~~~~~~~~~ CHAR CLASSES ~~~~~~~~~~~~~~~~~~~~~*/');
-      builder.pushAll(charClasses.vars());
-      builder.push('/*~~~~~~~~~~~~~~~~ EXPECTED DEFINITIONS ~~~~~~~~~~~~~~~~~*/');
-      builder.pushAll(expected.vars());
-      builder.push('/*~~~~~~~~~~~~~~ RULE FORWARD DECLARATIONS ~~~~~~~~~~~~~~*/');
-      builder.pushAll(node.rules.map(function(r) { return rDef(r) + ';'; }));
       builder.push('/*~~~~~~~~~~~~~~~~~~~~~ PREDICATES ~~~~~~~~~~~~~~~~~~~~~~*/');
       builder.pushAll(predicates.defines());
       builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~ ACTIONS ~~~~~~~~~~~~~~~~~~~~~~~*/');
       builder.pushAll(actions.defines());
+      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~ LITERALS ~~~~~~~~~~~~~~~~~~~~~~~*/');
+      builder.pushAll(literals.vars());
+      builder.push('/*~~~~~~~~~~~~~~~~~~~~ CHAR CLASSES ~~~~~~~~~~~~~~~~~~~~~*/');
+      // Верхняя половина числа -- количество одиночных символов, нижняя -- количество диапазонов.
+      builder.push('#define MAKE_LENGTHS(_1, _2) (((_1) << (sizeof(((struct CharClass*)0)->counts)*4)) | (_2))');
+      builder.pushAll(charClasses.vars());
+      builder.push('#undef MAKE_LENGTHS');
+      builder.push('/*~~~~~~~~~~~~~~~~ EXPECTED DEFINITIONS ~~~~~~~~~~~~~~~~~*/');
+      // Верхние 3 бита числа отводим под тип, остальное -- длина строки.
+      builder.push('#define MAKE_TYPEANDLEN(type, len) ((type << (sizeof(((struct Expected*)0)->typeAndLen)*8 - 3)) | len)');
+      builder.pushAll(expected.vars());
+      builder.push('#undef MAKE_TYPEANDLEN');
+      builder.push('/*~~~~~~~~~~~~~~ RULE FORWARD DECLARATIONS ~~~~~~~~~~~~~~*/');
+      builder.pushAll(node.rules.map(function(r) { return rDef(r) + ';'; }));
       builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~ RULES ~~~~~~~~~~~~~~~~~~~~~~~~*/');
       builder.pushAll(rules);
       builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
@@ -337,7 +343,7 @@ function generateCCode(ast) {
         '  if (startRule) {',
         '    struct Range s;',
         '    s.begin = startRule;',
-        '    s.end = startRule + len;',
+        '    s.end   = startRule + len;',
         '    return parse(input, &s, options);',
         '  }',
         '  return parse(input, 0, options);',
@@ -351,17 +357,16 @@ function generateCCode(ast) {
         '  if (startRule) {',
         '    struct Range s;',
         '    s.begin = startRule;',
-        '    s.end = startRule + startRuleLen;',
+        '    s.end   = startRule + startRuleLen;',
         '    return parse(&r, &s, options);',
         '  }',
         '  return parse(&r, 0, options);',
         '}'
       );
 
-      code.push(
+      builder.push(
       '#undef length',
-      '#undef isFailed',
-      '#undef MAKE_LENGTHS'
+      '#undef isFailed'
       );
       return code.join('\n');
     },

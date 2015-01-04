@@ -64,7 +64,7 @@ enum E_EXPECTED_TYPE {
   E_EX_TYPE_USER
 };
 struct Expected {
-  enum E_EXPECTED_TYPE type;
+  unsigned int typeAndLen;
   const char* message;
 };
 struct FailInfo {
