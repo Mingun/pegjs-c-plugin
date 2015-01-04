@@ -80,7 +80,7 @@ function generateCCode(ast) {
         return type + ' ' + arrays.map(arrays.range(0, this.maxSp + 1), s).join(', ') + ';';
       },
       range: function(sp) {
-        return arrays.map(arrays.range(sp + 1, this.sp), s);
+        return arrays.map(arrays.range(sp, this.sp + 1), s);
       },
       result: function() { return s(0); },
     };
@@ -104,7 +104,7 @@ function generateCCode(ast) {
     function n2(v, i) { return retType + ' ' + n1(i, v.params.map(function(p) { return argType + ' ' + p; })); }
     var storage = [];
     return {
-      add: function(namespace, params, code) {
+      add: function(namespace, params, code, args) {
         var pList = params.join(',');
         var index = arrays.indexOf(storage, function(f) {
           return f.namespace === namespace
@@ -112,7 +112,7 @@ function generateCCode(ast) {
               && f.body === code;
         });
 
-        return n1(index < 0 ? storage.push({ namespace: namespace, params: params, body: code }) - 1 : index, params);
+        return n1(index < 0 ? storage.push({ namespace: namespace, params: params, body: code }) - 1 : index, args);
       },
 
       declares: function() { return storage.map(function(v, i) { return n2(v, i) + ';'; }); },
@@ -123,7 +123,7 @@ function generateCCode(ast) {
     };
   }
   function makeContext(code) {
-    var resultStack = makeStack('r', 'struct Result*');
+    var resultStack = makeStack('r', 'ResultPtr');
     var posStack    = makeStack('p', 'struct Pos');
 
     var builder = new CodeBuilder(code);
@@ -137,6 +137,7 @@ function generateCCode(ast) {
     function popPos() {
       return 'clonePos(&ctx->current, &' + posStack.pop() + ');';
     }
+
     function make(sp, env, action) {
       return {
         sp:     sp,    // stack pointer
@@ -236,13 +237,14 @@ function generateCCode(ast) {
   }
   /// Возвращает имя функции, разбирающей правило с указанным именем.
   function r(name) { return '_parse' + name; }
+  function rDef(node) { return 'INTERNAL static struct Result* ' + r(node.name) + '(struct Context* ctx)'; }
 
   function createLookupTable(ruleNames) {
     var entries = ruleNames.sort().map(function(n) {
       return '  { ' + n.length + ', "' + n + '", &' + r(n) + ' }';
     });
     return [
-      'static ParseFunc funcs[] = {',
+      'static struct ParseFunc funcs[] = {',
       entries.join(',\n'),
       '};',
     ];
@@ -288,6 +290,8 @@ function generateCCode(ast) {
       builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
       builder.pushAll(expected.vars());
       builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      builder.pushAll(node.rules.map(function(r) { return rDef(r) + ';'; }));
+      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
       builder.pushAll(predicates.defines());
       builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
       builder.pushAll(actions.defines());
@@ -296,7 +300,7 @@ function generateCCode(ast) {
       builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
       builder.indent('PARSER_API struct Result* parse(struct Range* input) {');
       // Создаем таблицу для поиска правил разбора по имени.
-      builder.pushAll(createLookupTable(node.rules.map(function(r) {return r.name})));
+      builder.pushAll(createLookupTable(node.rules.map(function(r) { return r.name; })));
       builder.dedent('}');
 
       code.push(
@@ -309,7 +313,7 @@ function generateCCode(ast) {
 
     rule: function(node) {
       var code = [
-        'INTERNAL static struct Result* ' + r(node.name) + '(struct Context* ctx) {',
+        rDef(node) + ' {',
         '  ',// зарезервировано для переменных из стека результатов
         '  ',// зарезервировано для переменных из стека позиций
         '',
@@ -356,7 +360,7 @@ function generateCCode(ast) {
       context.pushCode(context.pushPos());
       context.indent('do {');
       var first;
-      var sp = context.resultStack.sp;
+      var sp = context.resultStack.sp + 1;
       node.elements.forEach(function(n, i) {
         // Для всех элементов последовательности набор переменных одинаковый.
         generate(n, context.child(context.sp + i + 1, context.env, null));
@@ -379,16 +383,18 @@ function generateCCode(ast) {
           ''
         );
       });
+      var args = context.resultStack.range(sp);
       var elems = context.resultStack.pop(node.elements.length);
       var beginPos = context.posStack.pop();
       if (context.action) {
         context.pushCode(actions.add(
           context.action.namespace,
           objects.keys(context.env),
-          context.action.code
+          context.action.code,
+          args
         ) + ';');
       }/* else */{// TODO: На данный момент изменение возвращаемого значения действиями не поддерживается.
-        elems.unshift('ctx', beginPos, elems.length);
+        elems.unshift('ctx', beginPos + '.offset', elems.length);
         context.pushCode(context.resultStack.push('wrap(' + elems.join(', ') + ')')); 
       }
       context.dedent('} while (false);');
@@ -455,11 +461,12 @@ function generateCCode(ast) {
       if (emitCall) {
         context.pushPos();
       }
-      generate(node.expression, context.child(context.sp, env, node));
+      var sp = context.sp;
+      generate(node.expression, context.child(sp, env, node));
       if (emitCall) {
         context.pushCode(
           'if (!isFailed(' + context.resultStack.top() + ')) {',
-          '  ' + actions.add(node.namespace, objects.keys(env), node.code) + ';',
+          '  ' + actions.add(node.namespace, objects.keys(env), node.code, context.resultStack.range(sp)) + ';',
           '}'
         );
       }

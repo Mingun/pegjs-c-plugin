@@ -1,5 +1,25 @@
 /** @file С89-совместимый заголовочный файл для генератора парсеров. */
 
+/* Для memcmp. */
+#include <string.h>
+/* Для malloc/calloc/free. */
+#include <stdlib.h>
+/* Для va_*, используемых в функции wrap. */
+#include <stdarg.h>
+#include <assert.h>
+
+#ifndef PARSER_API
+#  define PARSER_API
+#endif
+#ifndef INTERNAL
+#  define INTERNAL
+#endif
+
+#if !__cplusplus
+#  define true 1
+#  define false 0
+#endif
+
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 /* Структуры парсера. */
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
@@ -87,7 +107,8 @@ struct CharClass {
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 /* Вспомогательные структуры. */
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-typedef struct Result* (*)(struct Context*) RuleFunc;
+typedef struct Result* ResultPtr;
+typedef struct Result* (*RuleFunc)(struct Context*);
 struct ParseFunc {
   /** Длина имени функции для разбора правила. */
   unsigned int len;
@@ -159,8 +180,8 @@ struct Result* allocResult(const char* begin, const char* end, unsigned int coun
   assert(r);
   r->range.begin = begin;
   r->range.end   = end;
-  r.count = count;
-  r.childs = count == 0 ? 0 : calloc(count, sizeof(struct Result));
+  r->count = count;
+  r->childs = count == 0 ? 0 : calloc(count, sizeof(struct Result));
   return r;
 }
 void freeResult(struct Result* result) {
@@ -194,17 +215,17 @@ void clearExpected(struct FailInfo* info) {
 }
 void pushExpected(struct FailInfo* info, struct Expected* expected) {
   unsigned int count = ++info->count;
-  info->expected = (struct Expected**)realloc(info->expected, count * sizeof(*info->expected));
+  info->expected = (const struct Expected**)realloc(info->expected, count * sizeof(*info->expected));
   info->expected[count-1] = expected;
 }
 struct Result* fail(struct Context* context, struct Expected* expected) {
   assert(context);
   assert(expected);
   if (context->failInfo.silent == 0) {
-    if (context->current.offset < context->failInfo.pos.offset) { return; }
+    if (context->current.offset < context->failInfo.pos.offset) { return &FAILED; }
 
     if (context->current.offset > context->failInfo.pos.offset) {
-      clonePos(context->failInfo.pos, context->current);
+      clonePos(&context->failInfo.pos, &context->current);
       clearExpected(&context->failInfo);
     }
 
@@ -276,7 +297,7 @@ struct Result* parseCharClass(struct Context* context, struct CharClass* cls, st
   if (matchCharClass(context, cls)) {
     const char* begin = context->input.begin + context->current.offset;
     movePos(context, 1);
-    return allocResult(begin, begin + len, 0);
+    return allocResult(begin, begin + 1, 0);
   } else {
     return fail(context, expected);
   }
