@@ -5,6 +5,37 @@ var arrays  = require("../../pegjs2/lib/utils/arrays"),
     js      = require("../../pegjs2/lib/compiler/javascript");
 
 function generateCCode(ast) {
+  function CodeBuilder(code) {
+    var _indent = [];
+    var _indentCache = '';
+
+    var self = this;
+
+    function push() {
+      for (var i = 0; i < arguments.length; ++i) {
+        var arg = arguments[i];
+        // Генерируем отступы только для непустых строк
+        code.push(arg.length > 0 ? _indentCache + arg : arg);
+      }
+    }
+    function indent() {
+      // Перед отступом можно опционально добавить какой-то код
+      push.apply(self, arguments);
+      _indent.push('  ');
+      _indentCache = _indent.join('');
+    }
+    function dedent() {
+      _indent.pop();
+      _indentCache = _indent.join('');
+      // После отступа можно опционально добавить какой-то код
+      push.apply(self, arguments);
+    }
+    
+    this.push = push;
+    this.pushAll = function(arr) { return push.apply(self, arr); };
+    this.indent = indent;
+    this.dedent = dedent;
+  }
   function makeStack(varName, type) {
     function s(i) { return varName + i; }
     return {
@@ -49,7 +80,6 @@ function generateCCode(ast) {
         return type + ' ' + arrays.map(arrays.range(0, this.maxSp + 1), s).join(', ') + ';';
       },
       range: function(sp) {
-        console.log(sp, this.sp, this.maxSp)
         return arrays.map(arrays.range(sp + 1, this.sp), s);
       },
       result: function() { return s(0); },
@@ -96,28 +126,8 @@ function generateCCode(ast) {
     var resultStack = makeStack('r', 'struct Result*');
     var posStack    = makeStack('p', 'struct Pos');
 
-    var _indent = [];
-    var _indentCache = '';
+    var builder = new CodeBuilder(code);
 
-    function pushCode() {
-      for (var i = 0; i < arguments.length; ++i) {
-        var arg = arguments[i];
-        // Генерируем отступы только для непустых строк
-        code.push(arg.length > 0 ? _indentCache + arg : arg);
-      }
-    }
-    function indent() {
-      // Перед отступом можно опционально добавить какой-то код
-      pushCode.apply(null, arguments);
-      _indent.push('  ');
-      _indentCache = _indent.join('');
-    }
-    function dedent() {
-      _indent.pop();
-      _indentCache = _indent.join('');
-      // После отступа можно опционально добавить какой-то код
-      pushCode.apply(null, arguments);
-    }
     function pushPos() {
       // Эта функция сгенерирует некорректный код для C, поэтому ничего в нее
       // не передаем. Нам важно только то, что сейчас увеличится указатель стека.
@@ -136,9 +146,9 @@ function generateCCode(ast) {
         resultStack: resultStack,
         posStack: posStack,
 
-        pushCode: pushCode,
-        indent: indent,
-        dedent: dedent,
+        pushCode: builder.push,
+        indent: builder.indent,
+        dedent: builder.dedent,
 
         child: make,
 
@@ -271,22 +281,23 @@ function generateCCode(ast) {
       '#define isFailed(r) ((r) == &FAILED)',
       '#define length(r) ((r)->count)',
       ];
-      Array.prototype.push.apply(code, literals.vars());
-      code.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
-      Array.prototype.push.apply(code, charClasses.vars());
-      code.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
-      Array.prototype.push.apply(code, expected.vars());
-      code.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
-      Array.prototype.push.apply(code, predicates.defines());
-      code.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
-      Array.prototype.push.apply(code, actions.defines());
-      code.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
-      Array.prototype.push.apply(code, rules);
-      code.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
-      code.push('PARSER_API struct Result* parse(struct Range* input) {'),
+      var builder = new CodeBuilder(code);
+      builder.pushAll(literals.vars());
+      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      builder.pushAll(charClasses.vars());
+      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      builder.pushAll(expected.vars());
+      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      builder.pushAll(predicates.defines());
+      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      builder.pushAll(actions.defines());
+      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      builder.pushAll(rules);
+      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      builder.indent('PARSER_API struct Result* parse(struct Range* input) {');
       // Создаем таблицу для поиска правил разбора по имени.
-      Array.prototype.push.apply(code, createLookupTable(node.rules.map(function(r) {return r.name})));
-      code.push('}');
+      builder.pushAll(createLookupTable(node.rules.map(function(r) {return r.name})));
+      builder.dedent('}');
 
       code.push(
       '#undef length',
