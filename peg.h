@@ -17,10 +17,6 @@
 #  define INTERNAL
 #endif
 
-#if !__cplusplus
-#  define true 1
-#  define false 0
-#endif
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 /* Структуры парсера. */
@@ -140,7 +136,7 @@ int matchLiteral(struct Context* context, const struct Literal* literal) {
 @param ranges Массив из @a count описателей диапазонов символов/списков символов.
 @param count Количество элементов в массиве @a ranges.
 */
-int matchCharClass(struct Context* context, struct CharClass* cls) {
+int matchCharClass(struct Context* context, struct CharClass* cls, int inverted) {
   const char* begin;
   assert(context);
   assert(context->input.begin);
@@ -174,16 +170,16 @@ int matchCharClass(struct Context* context, struct CharClass* cls) {
       assert(b < e);
       if (b <= ch && ch <= e) {
         /* Текущий символ принадлежит диапазону символов. */
-        return 1;
+        return !inverted;
       }
     }
     /* Класс символов является просто списком символов, которые нужно проверить. */
     if (memchr(cls->single, ch, countHI) != 0) {
       /* Если текущий символ строки имеется в списке допустимых символов, сопоставление успешно. */
-      return 1;
+      return !inverted;
     }
   }
-  return 0;
+  return inverted;
 }
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 /* Работа с памятью. */
@@ -305,11 +301,11 @@ struct Result* parseLiteral(struct Context* context, struct Literal* literal, st
     return fail(context, expected);
   }
 }
-struct Result* parseCharClass(struct Context* context, struct CharClass* cls, struct Expected* expected) {
+struct Result* parseCharClass(struct Context* context, struct CharClass* cls, struct Expected* expected, int inverted) {
   assert(context);
   assert(cls);
   assert(expected);
-  if (matchCharClass(context, cls)) {
+  if (matchCharClass(context, cls, inverted)) {
     const char* begin = context->input.begin + context->current.offset;
     movePos(context, 1);
     return allocResult(begin, begin + 1, 0);

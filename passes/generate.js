@@ -227,7 +227,7 @@ function generateCCode(ast) {
     generate(expression, context.child(context.sp + 1, objects.clone(context.env), null));
     context.pushCode('if (isFailed(' + context.resultStack.top() + ')) { break; }');
     context.pushCode('append(' + arr + ', ' + context.resultStack.pop() + ');');
-    context.dedent('} while (true);');
+    context.dedent('} while (1);');
     // Если задан максимум, генерируем проверку минимума
     if (hasMin) {
       context.resultStack.pop();
@@ -284,6 +284,7 @@ function generateCCode(ast) {
       });
 
       var code = [
+      '#include "peg.h"',
       '#define isFailed(r) ((r) == &FAILED)',
       '#define length(r) ((r)->count)'
       ];
@@ -413,7 +414,7 @@ function generateCCode(ast) {
           context.pushCode('if (!isFailed(' + context.resultStack.pop() + ')) { break; }', '');
         }
       });
-      context.dedent('} while (false);');
+      context.dedent('} while (0);');
     },
 
     sequence: function(node, context) {
@@ -457,7 +458,7 @@ function generateCCode(ast) {
         elems.unshift('ctx', beginPos + '.offset', elems.length);
         context.pushCode(context.resultStack.push('wrap(' + elems.join(', ') + ')')); 
       }
-      context.dedent('} while (false);');
+      context.dedent('} while (0);');
     },
 
     labeled: function(node, context) {
@@ -552,7 +553,9 @@ function generateCCode(ast) {
       var v = charClasses.add(node.parts);
       var e = expected.add('CLASS', node.rawText, node.rawText);
       // Помещаем результат разбора класса символов на вершину стека результатов.
-      context.pushCode(context.resultStack.push('parseCharClass(ctx, &' + v + ', &' + e + ')'));
+      context.pushCode(context.resultStack.push(
+        'parseCharClass(ctx, &' + v + ', &' + e + ', ' + (node.inverted ? '1' : '0')+ ')'
+      ));
     },
 
     any: function(node, context) {
