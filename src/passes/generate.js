@@ -1,9 +1,23 @@
 var arrays  = require("pegjs/lib/utils/arrays"),
     objects = require("pegjs/lib/utils/objects"),
     asts    = require("pegjs/lib/compiler/asts"),
-    visitor = require("pegjs/lib/compiler/visitor");
+    visitor = require("pegjs/lib/compiler/visitor"),
+    GrammarError = require("pegjs/lib/grammar-error");
 
-function generateCCode(ast) {
+function generateCCode(ast, options) {
+  function emitWarning(message, value, region) {
+    // В оригинальном pegjs нет ни region-а у узлов (#225), ни коллектора ошибок (#243),
+    // поэтому проверяем их наличие, прежде, чем воспользоваться.
+    if (region) {
+      message = 'Line ' + region.begin.line + ', column ' + region.begin.column + ': ' + message;
+    }
+    if (options.collector) {
+      options.collector.emitWarning(message);
+    } else {
+      throw new GrammarError(message + ' (' + JSON.stringify(value) + ')');
+    }
+  }
+
   function CodeBuilder(code) {
     var _indent = [];
     var _indentCache = '';
@@ -552,6 +566,12 @@ function generateCCode(ast) {
     },
 
     literal: function(node, context) {
+      if (node.ignoreCase) {
+        emitWarning("Case insensitive matching not supported", node.value, node.region);
+      }
+      if (/[^\x00-\xFF]/g.test(node.value)) {
+        emitWarning("Unicode symbols not supported", node.value, node.region);
+      }
       var v = literals.add(node.value);
       var e = expected.add(
         'LITERAL',
@@ -563,6 +583,9 @@ function generateCCode(ast) {
     },
 
     "class": function(node, context) {
+      if (node.ignoreCase) {
+        emitWarning("Case insensitive matching not supported", node.rawText, node.region);
+      }
       var v = charClasses.add(node.parts);
       var e = expected.add('CLASS', node.rawText, node.rawText);
       // Помещаем результат разбора класса символов на вершину стека результатов.
