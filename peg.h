@@ -1,5 +1,5 @@
 /** @file С89-совместимый заголовочный файл для генератора парсеров.
-    `gcc -pedantic -ansi -std=c89` не должен выдавать никаких предупреждений.
+    `gcc -pedantic -Wall -ansi -std=c89` не должен выдавать никаких предупреждений.
 */
 
 /* Для memcmp. */
@@ -215,23 +215,33 @@ void freeResult(struct Result* result) {
 /* Работа с ожидаемыми элементами. */
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 void clonePos(struct Pos* dest, const struct Pos* src) {
+  assert(dest);
+  assert(src);
   dest->offset = src->offset;
   dest->line   = src->line;
   dest->column = src->column;
 }
 void clearExpected(struct FailInfo* info) {
+  assert(info);
   free(info->expected);
   info->count = 0;
   info->expected = 0;
 }
 void pushExpected(struct FailInfo* info, struct Expected* expected) {
-  unsigned int count = ++info->count;
+  unsigned int count;
+  assert(info);
+  assert(expected);
+
+  count = ++info->count;
   info->expected = (const struct Expected**)realloc(info->expected, count * sizeof(*info->expected));
   info->expected[count-1] = expected;
 }
 struct Result* fail(struct Context* context, struct Expected* expected) {
   assert(context);
   assert(expected);
+  /*  Если подавление запоминания позиций ошибки разбора не включено, то пытаемся
+      запомнить позицию, если она расположена во входных данных позже, чем уже имеющиеся.
+  */
   if (context->failInfo.silent == 0) {
     if (context->current.offset < context->failInfo.pos.offset) { return &FAILED; }
 

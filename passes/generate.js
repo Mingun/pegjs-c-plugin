@@ -1,8 +1,7 @@
-var arrays  = require("../../pegjs2/lib/utils/arrays"),
-    objects = require("../../pegjs2/lib/utils/objects"),
-    asts    = require("../../pegjs2/lib/compiler/asts"),
-    visitor = require("../../pegjs2/lib/compiler/visitor"),
-    js      = require("../../pegjs2/lib/compiler/javascript");
+var arrays  = require("pegjs/lib/utils/arrays"),
+    objects = require("pegjs/lib/utils/objects"),
+    asts    = require("pegjs/lib/compiler/asts"),
+    visitor = require("pegjs/lib/compiler/visitor");
 
 function generateCCode(ast) {
   function CodeBuilder(code) {
@@ -243,6 +242,21 @@ function generateCCode(ast) {
   /// Возвращает имя функции, разбирающей правило с указанным именем.
   function r(name) { return '_parse' + name; }
   function rDef(node) { return 'INTERNAL static struct Result* ' + r(node.name) + '(struct Context* ctx)'; }
+  function hex(ch) { return ch.charCodeAt(0).toString(16).toUpperCase(); }
+  function escape(s) {
+    return s
+      .replace(/\\/g,   '\\\\')   // backslash
+      .replace(/"/g,    '\\"')    // closing double quote
+      .replace(/\x07/g, '\\a')    // alarm
+      .replace(/\x08/g, '\\b')    // backspace
+      .replace(/\t/g,   '\\t')    // horizontal tab
+      .replace(/\n/g,   '\\n')    // line feed
+      .replace(/\x0B/g, '\\v')    // vertival tab
+      .replace(/\f/g,   '\\f')    // form feed
+      .replace(/\r/g,   '\\r')    // carriage return
+      .replace(/[\x00-\x06\x0E\x0F]/g,  function(ch) { return '\\x0' + hex(ch); })
+      .replace(/[\x10-\x1F\x80-\xFF]/g, function(ch) { return '\\x'  + hex(ch); });
+  }
 
   function createLookupTable(ruleNames) {
     var entries = ruleNames.sort().map(function(n) {
@@ -255,7 +269,6 @@ function generateCCode(ast) {
     ];
   }
 
-  var escape = js.stringEscape;
   var literals    = makeConstantBuilder('l', 'static struct Literal', function(v) {
     return '{ ' + v.length + ', "' + escape(v) + '" }';
   });
