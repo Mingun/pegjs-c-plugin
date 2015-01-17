@@ -2,7 +2,7 @@
     `gcc -pedantic -Wall -ansi -std=c89` не должен выдавать никаких предупреждений.
 */
 
-/* Для memcmp. */
+/* Для memcmp, memcpy. */
 #include <string.h>
 /* Для malloc/calloc/free/bsearch. */
 #include <stdlib.h>
@@ -17,7 +17,8 @@
 #  define INTERNAL
 #endif
 
-
+#define isFailed(r) ((r) == &FAILED)
+#define isNil(r)    ((r) == &NIL)
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 /* Структуры парсера. */
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
@@ -26,19 +27,14 @@ struct Range {
   const char* begin;
   const char* end;
 };
-struct Result {
-  /** Границы данного узла во входном потоке. */
-  struct Range range;
-  /** Количество потомков данного узла. */
-  unsigned int count;
-  /** Указатель на потомков данного узла. */
-  struct Result** childs;
-};
-/** Содержит позицию в разбираемых данных, как в виде смещения в байтах от начала строки,
-    так и в виде номеров строки и столбца.
+/** Содержит позицию в разбираемых данных, как в виде смещения в раббираемых элементах
+    от начала строки, так и в виде номеров строки и столбца. Кроме того, содержит указатель
+    на первый элемент разбираемых данных, с которого и начинается данная локация.
 */
-struct Pos {
-  /** Смещение в байтах от начала разбираемых данных, нумерация с 0. */
+struct Location {
+  /** Данные, начинающиеся в этой локации. */
+  const char* data;
+  /** Смещение в элементах от начала разбираемых данных, нумерация с 0. */
   unsigned int offset;
   /** Номер строки в разбираемых данных, нумерация с 1. Новая строка начинается после символа
       '\r', '\n' или пары символов '\r\n'.
@@ -46,6 +42,20 @@ struct Pos {
   unsigned int line;
   /** Номер столбца в строке разбираемых данных, нумерация с 1. */
   unsigned int column;
+};
+struct Region {
+  /** Начало региона с данными. */
+  struct Location begin;
+  /** Конец региона с данными. Не является частью региона, лежит за его концом. */
+  struct Location end;
+};
+struct Result {
+  /** Границы данного узла во входном потоке. */
+  struct Region region;
+  /** Количество потомков данного узла. */
+  unsigned int count;
+  /** Указатель на потомков данного узла. */
+  struct Result** childs;
 };
 enum E_EXPECTED_TYPE {
   /** Ожидается любой символ. */
@@ -66,7 +76,7 @@ struct Expected {
 struct FailInfo {
   unsigned int silent;
   /** Позиция, в которой необходимо сообщить о невозможности разбора. */
-  struct Pos pos;
+  struct Location pos;
   /** Количество элементов Expected в массиве expected. */
   unsigned int count;
   /** Массив возможных ожидаемых значений в позиции failPos. */
@@ -76,11 +86,11 @@ struct Context {
   /** Разбираемые данные. */
   struct Range input;
   /** Текущая позиция в разбираемых данных. */
-  struct Pos current;
+  struct Location current;
   /** Информация об ошибках разбора. */
   struct FailInfo failInfo;
   /** Информация, передаваемая пользователем в парсер. Парсером не используется. */
-  void* options;
+  void* data;
 };
 struct Literal {
   /** Длина литерала (массива data). */
@@ -117,8 +127,15 @@ struct ParseFunc {
   /** Функция для разбора правила. */
   RuleFunc func;
 };
-static struct Result FAILED = {{0, 0}, 0, 0};
-static struct Result NIL    = {{0, 0}, 0, 0};
+/** Константа, возвращаемая из функций разбора в том случае, если разбор был неуспешен.
+    Соответствие результата разбора данной константе может быть проверено макросом isFailed.
+*/
+static struct Result FAILED = {{{0, 0, 0, 0}, {0, 0, 0, 0}}, 0, 0};
+/** Константа, используемая как результат успешного разбора для предикатов
+    и опциональных элементов, когда опциональное значение отсутствует.
+    Соответствие результата разбора данной константе может быть проверено макросом isNil.
+*/
+static struct Result NIL    = {{{0, 0, 0, 0}, {0, 0, 0, 0}}, 0, 0};
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 /* Процедуры сопоставления. */
@@ -189,8 +206,8 @@ struct Result* allocResult(const char* begin, const char* end, unsigned int coun
   assert(begin);
   assert(end);
   assert(r);
-  r->range.begin = begin;
-  r->range.end   = end;
+  r->region.begin.data = begin;
+  r->region.end.data   = end;
   r->count = count;
   r->childs = count == 0 ? 0 : calloc(count, sizeof(struct Result));
   return r;
@@ -214,13 +231,6 @@ void freeResult(struct Result* result) {
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 /* Работа с ожидаемыми элементами. */
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-void clonePos(struct Pos* dest, const struct Pos* src) {
-  assert(dest);
-  assert(src);
-  dest->offset = src->offset;
-  dest->line   = src->line;
-  dest->column = src->column;
-}
 void clearExpected(struct FailInfo* info) {
   assert(info);
   free(info->expected);
@@ -246,7 +256,7 @@ struct Result* fail(struct Context* context, struct Expected* expected) {
     if (context->current.offset < context->failInfo.pos.offset) { return &FAILED; }
 
     if (context->current.offset > context->failInfo.pos.offset) {
-      clonePos(&context->failInfo.pos, &context->current);
+      memcpy(&context->failInfo.pos, &context->current, sizeof(struct Location));
       clearExpected(&context->failInfo);
     }
 
@@ -258,6 +268,7 @@ struct Result* fail(struct Context* context, struct Expected* expected) {
 /* Работа с позицией. */
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 void movePos(struct Context* context, unsigned int count) {
+  context->current.data += count;
   context->current.offset += count;
   
   /*TODO: Скорректировать line и column*/
@@ -275,10 +286,12 @@ void movePos(struct Context* context, unsigned int count) {
         освободить функцией freeResult, когда он больше не будет нужен.
 */
 struct Result* parseAny(struct Context* context) {
+#define MAKE_TYPEANDLEN(type, len) ((type << (sizeof(((struct Expected*)0)->typeAndLen)*8 - 3)) | len)
   static struct Expected expected = {
-    E_EX_TYPE_ANY,
+    MAKE_TYPEANDLEN(E_EX_TYPE_ANY, sizeof("any character") / sizeof(char)),
     "any character"
   };
+#undef MAKE_TYPEANDLEN
   const char* begin = context->input.begin + context->current.offset;
 
   if (begin < context->input.end) {

@@ -142,7 +142,7 @@ function generateCCode(ast, options) {
   }
   function makeContext(code) {
     var resultStack = makeStack('r', 'ResultPtr');
-    var posStack    = makeStack('p', 'struct Pos');
+    var posStack    = makeStack('p', 'struct Location');
 
     var builder = new CodeBuilder(code);
 
@@ -150,10 +150,10 @@ function generateCCode(ast, options) {
       // Эта функция сгенерирует некорректный код для C, поэтому ничего в нее
       // не передаем. Нам важно только то, что сейчас увеличится указатель стека.
       posStack.push();
-      return 'clonePos(&' + posStack.top() + ', &ctx->current);';
+      return 'memcpy(&' + posStack.top() + ', &ctx->current, sizeof(struct Location));';
     }
     function popPos() {
-      return 'clonePos(&ctx->current, &' + posStack.pop() + ');';
+      return 'memcpy(&ctx->current, &' + posStack.pop() + ', sizeof(struct Location));';
     }
 
     function make(sp, env, action) {
@@ -312,7 +312,6 @@ function generateCCode(ast, options) {
 
       var code = [
       '#include "peg.h"',
-      '#define isFailed(r) ((r) == &FAILED)',
       '#define length(r) ((r)->count)'
       ];
       var builder = new CodeBuilder(code);
@@ -337,19 +336,20 @@ function generateCCode(ast, options) {
       builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~ RULES ~~~~~~~~~~~~~~~~~~~~~~~~*/');
       builder.pushAll(rules);
       builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
-      builder.indent('PARSER_API struct Result* parse(struct Range* input, struct Range* startRule, void* options) {');
+      builder.indent('PARSER_API struct Result* parse(struct Range* input, struct Range* startRule, void* data) {');
       // Создаем таблицу для поиска правил разбора по имени.
       builder.pushAll(createLookupTable(node.rules.map(function(r) { return r.name; })));
       builder.push(
         'struct Context ctx = {',
-        '  { 0, 0 },',
-        '  { 0, 1, 1 },',
-        '  { 0, { 0, 1, 1 }, 0, 0 },',
-        '  0',
+        '  { 0, 0 },',// Range
+        '  { 0, 0, 1, 1 },',// Location
+        '  { 0, { 0, 0, 1, 1 }, 0, 0 },',// FailInfo
+        '  0',// data
         '};',
         'ctx.input.begin = input->begin;',
         'ctx.input.end = input->end;',
-        'ctx.options = options;',
+        'ctx.current.data = input->begin;',
+        'ctx.data = data;',
         'if (startRule) {',
         '  const struct ParseFunc* func = findRule(funcs, sizeof(funcs) / sizeof(funcs[0]), startRule);',
         '  if (func == 0) { return 0; }',
@@ -359,26 +359,22 @@ function generateCCode(ast, options) {
       );
       builder.dedent('}');
       builder.push(
-        'PARSER_API struct Result* parse2(const char* input, unsigned int len, struct Range* startRule, void* options) {',
+        'PARSER_API struct Result* parse2(const char* input, unsigned int len, struct Range* startRule, void* data) {',
         '  struct Range r;',
         '  r.begin = input;',
         '  r.end   = input + len;',
-        '  return parse(&r, startRule, options);',
-        '}'
-      );
-      builder.push(
-        'PARSER_API struct Result* parse3(struct Range* input, const char* startRule, unsigned int len, void* options) {',
+        '  return parse(&r, startRule, data);',
+        '}',
+        'PARSER_API struct Result* parse3(struct Range* input, const char* startRule, unsigned int len, void* data) {',
         '  if (startRule) {',
         '    struct Range s;',
         '    s.begin = startRule;',
         '    s.end   = startRule + len;',
-        '    return parse(input, &s, options);',
+        '    return parse(input, &s, data);',
         '  }',
-        '  return parse(input, 0, options);',
-        '}'
-      );
-      builder.push(
-        'PARSER_API struct Result* parse4(const char* input, unsigned int inputLen, const char* startRule, unsigned int startRuleLen, void* options) {',
+        '  return parse(input, 0, data);',
+        '}',
+        'PARSER_API struct Result* parse4(const char* input, unsigned int inputLen, const char* startRule, unsigned int startRuleLen, void* data) {',
         '  struct Range r;',
         '  r.begin = input;',
         '  r.end   = input + inputLen;',
@@ -386,15 +382,11 @@ function generateCCode(ast, options) {
         '    struct Range s;',
         '    s.begin = startRule;',
         '    s.end   = startRule + startRuleLen;',
-        '    return parse(&r, &s, options);',
+        '    return parse(&r, &s, data);',
         '  }',
-        '  return parse(&r, 0, options);',
-        '}'
-      );
-
-      builder.push(
-      '#undef length',
-      '#undef isFailed'
+        '  return parse(&r, 0, data);',
+        '}',
+        '#undef length'
       );
       return code.join('\n');
     },
@@ -464,7 +456,7 @@ function generateCCode(ast, options) {
           context.resultStack.range(sp).map(function(r) { return '  freeResult(' + r + ');'; })
         );
         context.pushCode(
-          '  clonePos(&ctx->current, &' + context.posStack.top() + ');',
+          '  memcpy(&ctx->current, &' + context.posStack.top() + ', sizeof(struct Location));',
           '  ' + first + ' = &FAILED;',
           '  break;',
           '}',
