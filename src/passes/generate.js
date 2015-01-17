@@ -235,7 +235,7 @@ function generateCCode(ast, options) {
     context.indent('do {');
     // Если задан максимум, генерируем проверку максимума
     if (max) {
-      context.pushCode('if (length(' + arr + ') >= ' + max + ') { break; }');
+      context.pushCode('if (' + arr + '->count >= ' + max + ') { break; }');
     }
     generate(expression, context.child(context.sp + 1, objects.clone(context.env), null));
     context.pushCode('if (isFailed(' + context.resultStack.top() + ')) { break; }');
@@ -245,7 +245,7 @@ function generateCCode(ast, options) {
     if (hasMin) {
       context.resultStack.pop();
       context.pushCode(
-        'if (length(' + arr + ') < ' + min + ') {',
+        'if (' + arr + '->count < ' + min + ') {',
         '  ' + context.popPos(),
         '  freeResult(' + arr + ');',
         '  ' + context.resultStack.push('&FAILED'),
@@ -311,8 +311,7 @@ function generateCCode(ast, options) {
       });
 
       var code = [
-      '#include "peg.h"',
-      '#define length(r) ((r)->count)'
+      '#include "peg-internal.h"',
       ];
       var builder = new CodeBuilder(code);
       builder.push('/*~~~~~~~~~~~~~~~~~~~~~ PREDICATES ~~~~~~~~~~~~~~~~~~~~~~*/');
@@ -344,12 +343,12 @@ function generateCCode(ast, options) {
         '  { 0, 0 },',// Range
         '  { 0, 0, 1, 1 },',// Location
         '  { 0, { 0, 0, 1, 1 }, 0, 0 },',// FailInfo
-        '  0',// data
+        '  0, 0',// FreeUserDataFunc и data
         '};',
         'ctx.input.begin = input->begin;',
         'ctx.input.end = input->end;',
         'ctx.current.data = input->begin;',
-        'ctx.data = data;',
+        'ctx.userData = data;',
         'if (startRule) {',
         '  const struct ParseFunc* func = findRule(funcs, sizeof(funcs) / sizeof(funcs[0]), startRule);',
         '  if (func == 0) { return 0; }',
@@ -385,8 +384,7 @@ function generateCCode(ast, options) {
         '    return parse(&r, &s, data);',
         '  }',
         '  return parse(&r, 0, data);',
-        '}',
-        '#undef length'
+        '}'
       );
       return code.join('\n');
     },
