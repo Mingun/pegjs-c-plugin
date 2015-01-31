@@ -43,7 +43,8 @@ function generateCCode(ast, options) {
       // После отступа можно опционально добавить какой-то код
       push.apply(self, arguments);
     }
-    
+
+    this.code = code;
     this.push = push;
     this.pushAll = function(arr) { return push.apply(self, arr); };
     this.indent = indent;
@@ -112,31 +113,107 @@ function generateCCode(ast, options) {
       vars: function() { return storage.map(n2); },
     };
   }
-  function makeFunctionBuilder(varName, retType, argType) {
-    function n1(i, args) { return varName + i + '(' + args.join(', ') + ')'; }
-    function n2(v, i) {
-      var p = v.params.map(function(p) { return argType + ' ' + p; });
-      p.unshift('struct Context* context');
-      return retType + ' ' + n1(i, p);
+  function makeUserCodeBuilder() {
+    /// Пространства имен для действий в грамматике. Содержит отображение
+    /// имени пространства имен на его инициализоватор.
+    var namespaces = {};
+
+    /// @varName Префикс имен функций, генерируемых данной функцией.
+    /// @retType Тип возвращаемого значения генерируемых функций.
+    /// @argType Тип аргументов, принимаемых генерируемой функцией.
+    function makeFunctionBuilder(varName, retType, argType) {
+      function n1(i, args) { return varName + i + '(' + args.join(', ') + ')'; }
+      function n2(v, i) {
+        var p = v.params.map(function(p) { return argType + ' ' + p; });
+        p.unshift('struct Context* context');
+        return retType + ' ' + n1(i, p);
+      }
+      var storage = [];
+      return {
+        add: function(namespace, params, code, args) {
+          args = args || [];
+          var pList = params.join(',');
+          var index = arrays.indexOf(storage, function(f) {
+            return f.namespace === namespace
+                && f.params.join(',') === pList
+                && f.body === code;
+          });
+          args.unshift('ctx');
+          // Если функции еще нет, добавляем ее и генерируем ее вызов.
+          return n1(index < 0 ? storage.push({ namespace: namespace, params: params, body: code }) - 1 : index, args);
+        },
+        /// Получает предварительные объявления всех функций в указанном пространстве имен.
+        /// @return Массив с предварительными объявлениями функций.
+        declares: function(ns) {
+          var r = [];
+          for (var i = 0; i < storage.length; ++i) {
+            var v = storage[i];
+            if (ns === v.namespace) {
+              r.push(n2(v, i) + ';');
+            }
+          }
+          return r;
+        },
+
+        /// Получает определения всех функций в указанном пространстве имен.
+        /// @return Массив с определениями функций.
+        defines: function(ns) {
+          var r = [];
+          for (var i = 0; i < storage.length; ++i) {
+            var v = storage[i];
+            if (ns === v.namespace) {
+              r.push(n2(v, i) + ' {' + v.body + '}');
+            }
+          }
+          return r;
+        },
+      };
     }
-    var storage = [];
+    /// Пользовательские предикаты грамматики.
+    var predicates  = makeFunctionBuilder('is', 'int', 'struct Result*');
+    /// Пользовательские действия грамматики.
+    var actions     = makeFunctionBuilder('f', 'void', 'struct Result*');
+
     return {
-      add: function(namespace, params, code, args) {
-        var pList = params.join(',');
-        var index = arrays.indexOf(storage, function(f) {
-          return f.namespace === namespace
-              && f.params.join(',') === pList
-              && f.body === code;
-        });
-
-        args.unshift('ctx');
-        return n1(index < 0 ? storage.push({ namespace: namespace, params: params, body: code }) - 1 : index, args);
+      addInitializer: function(namespace, code) {
+        var ns = namespaces[namespace] || {};
+        ns.initializer = code;
+        namespaces[namespace] = ns;
       },
+      addPredicate: function(namespace, params, code, args) {
+        namespaces[namespace] = namespaces[namespace] || {};
+        return predicates.add(namespace, params, code, args);
+      },
+      addAction: function(namespace, params, code, args) {
+        namespaces[namespace] = namespaces[namespace] || {};
+        return actions.add(namespace, params, code, args);
+      },
+      /// Генерирует массив с кодом файлов для каждого обнаруженного в грамматике
+      /// пространства имен.
+      buildFiles: function() {
+        var r = [];
+        for (var ns in namespaces) {
+          var info = namespaces[ns];
+          var b = new CodeBuilder([
+            '/* Namespace: ' + ns + ' */',
+            '#include "peg.h"',
+          ]);
+          b.push('/*~~~~~~~~~~~ PREDICATES FORWARD DECLARATIONS ~~~~~~~~~~~~*/');
+          b.pushAll(predicates.declares(ns));
+          b.push('/*~~~~~~~~~~~~~ ACTIONS FORWARD DECLARATIONS ~~~~~~~~~~~~~*/');
+          b.pushAll(actions.declares(ns));
+          b.push('/*~~~~~~~~~~~~~~~~~~~~~ INITIALIZER ~~~~~~~~~~~~~~~~~~~~~~*/');
+          if (info.initializer) {
+            b.push(info.initializer);
+          }
+          b.push('/*~~~~~~~~~~~~~~~~~~~~~~ PREDICATES ~~~~~~~~~~~~~~~~~~~~~~*/');
+          b.pushAll(predicates.defines(ns));
+          b.push('/*~~~~~~~~~~~~~~~~~~~~~~~~ ACTIONS ~~~~~~~~~~~~~~~~~~~~~~~*/');
+          b.pushAll(actions.defines(ns));
 
-      declares: function() { return storage.map(function(v, i) { return n2(v, i) + ';'; }); },
-
-      defines: function() {
-        return storage.map(function(v, i) { return n2(v, i) + ' {' + v.body + '}'; });
+          r.push(b.code.join('\n'));
+        }
+        return r;
       },
     };
   }
@@ -215,7 +292,7 @@ function generateCCode(ast, options) {
     var f = context.resultStack.push('&FAILED');
     var n = context.resultStack.replace('&NIL');
     context.pushCode(
-      'if (' + (negative ? '!' : '') + predicates.add(namespace, objects.keys(context.env), code) + ') {',
+      'if (' + (negative ? '!' : '') + ucb.addPredicate(namespace, objects.keys(context.env), code) + ') {',
       '  ' + (negative ? f : n),
       '} else {',
       '  ' + (negative ? n : f),
@@ -301,44 +378,41 @@ function generateCCode(ast, options) {
   var expected    = makeConstantBuilder('e', 'static struct Expected', function(type, value, description) {
     return '{ MAKE_TYPEANDLEN(E_EX_TYPE_' + type + ', ' + description.length + '), "' + escape(description) + '" }';
   });
-  var predicates  = makeFunctionBuilder('is', 'int', 'struct Result*');
-  var actions     = makeFunctionBuilder('f', 'void', 'struct Result*');
+
+  var ucb = makeUserCodeBuilder();
 
   var generate = visitor.build({
     grammar: function(node) {
+      node.initializers.forEach(generate);
       var rules = node.rules.map(function(r) {
         return generate(r).join('\n')
       });
 
-      var code = [
-      '#include "peg-internal.h"',
-      ];
-      var builder = new CodeBuilder(code);
-      builder.push('/*~~~~~~~~~~~~~~~~~~~~~ PREDICATES ~~~~~~~~~~~~~~~~~~~~~~*/');
-      builder.pushAll(predicates.defines());
-      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~ ACTIONS ~~~~~~~~~~~~~~~~~~~~~~~*/');
-      builder.pushAll(actions.defines());
-      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~ LITERALS ~~~~~~~~~~~~~~~~~~~~~~~*/');
-      builder.pushAll(literals.vars());
-      builder.push('/*~~~~~~~~~~~~~~~~~~~~ CHAR CLASSES ~~~~~~~~~~~~~~~~~~~~~*/');
+      var b = new CodeBuilder([
+        '/*Parser*/',
+        '#include "peg-internal.h"',
+      ]);
+      b.push('/*~~~~~~~~~~~~~~~~~~~~~~ LITERALS ~~~~~~~~~~~~~~~~~~~~~~~*/');
+      b.pushAll(literals.vars());
+      b.push('/*~~~~~~~~~~~~~~~~~~~~ CHAR CLASSES ~~~~~~~~~~~~~~~~~~~~~*/');
       // Верхняя половина числа -- количество одиночных символов, нижняя -- количество диапазонов.
-      builder.push('#define MAKE_LENGTHS(_1, _2) (((_1) << (sizeof(((struct CharClass*)0)->counts)*4)) | (_2))');
-      builder.pushAll(charClasses.vars());
-      builder.push('#undef MAKE_LENGTHS');
-      builder.push('/*~~~~~~~~~~~~~~~~ EXPECTED DEFINITIONS ~~~~~~~~~~~~~~~~~*/');
+      b.push('#define MAKE_LENGTHS(_1, _2) (((_1) << (sizeof(((struct CharClass*)0)->counts)*4)) | (_2))');
+      b.pushAll(charClasses.vars());
+      b.push('#undef MAKE_LENGTHS');
+      b.push('/*~~~~~~~~~~~~~~~~ EXPECTED DEFINITIONS ~~~~~~~~~~~~~~~~~*/');
       // Верхние 3 бита числа отводим под тип, остальное -- длина строки.
-      builder.push('#define MAKE_TYPEANDLEN(type, len) ((type << (sizeof(((struct Expected*)0)->typeAndLen)*8 - 3)) | len)');
-      builder.pushAll(expected.vars());
-      builder.push('#undef MAKE_TYPEANDLEN');
-      builder.push('/*~~~~~~~~~~~~~~ RULE FORWARD DECLARATIONS ~~~~~~~~~~~~~~*/');
-      builder.pushAll(node.rules.map(function(r) { return rDef(r) + ';'; }));
-      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~ RULES ~~~~~~~~~~~~~~~~~~~~~~~~*/');
-      builder.pushAll(rules);
-      builder.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
-      builder.indent('PARSER_API struct Result* parse(struct Range* input, struct Range* startRule, void* data) {');
+      b.push('#define MAKE_TYPEANDLEN(type, len) ((type << (sizeof(((struct Expected*)0)->typeAndLen)*8 - 3)) | len)');
+      b.pushAll(expected.vars());
+      b.push('#undef MAKE_TYPEANDLEN');
+      b.push('/*~~~~~~~~~~~~~~ RULE FORWARD DECLARATIONS ~~~~~~~~~~~~~~*/');
+      b.pushAll(node.rules.map(function(r) { return rDef(r) + ';'; }));
+      b.push('/*~~~~~~~~~~~~~~~~~~~~~~~~ RULES ~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      b.pushAll(rules);
+      b.push('/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/');
+      b.indent('PARSER_API struct Result* parse(struct Range* input, struct Range* startRule, void* data) {');
       // Создаем таблицу для поиска правил разбора по имени.
-      builder.pushAll(createLookupTable(node.rules.map(function(r) { return r.name; })));
-      builder.push(
+      b.pushAll(createLookupTable(node.rules.map(function(r) { return r.name; })));
+      b.push(
         'struct Context ctx = {',
         '  { 0, 0 },',// Range
         '  { 0, 0, 1, 1 },',// Location
@@ -356,8 +430,8 @@ function generateCCode(ast, options) {
         '}',
         'return ' + (node.rules.length > 0 ? (r(node.rules[0].name) + '(&ctx)') : '0')+ ';'
       );
-      builder.dedent('}');
-      builder.push(
+      b.dedent('}');
+      b.push(
         'PARSER_API struct Result* parse2(const char* input, unsigned int len, struct Range* startRule, void* data) {',
         '  struct Range r;',
         '  r.begin = input;',
@@ -386,7 +460,13 @@ function generateCCode(ast, options) {
         '  return parse(&r, 0, data);',
         '}'
       );
-      return code.join('\n');
+      var result = ucb.buildFiles();
+      result.push(b.code.join('\n'));
+      return result;
+    },
+
+    initializer: function(node) {
+      ucb.addInitializer(node.namespace, node.code);
     },
 
     rule: function(node) {
@@ -422,8 +502,9 @@ function generateCCode(ast, options) {
     },
 
     choice: function(node, context) {
-      context.indent('do {');
+      context.indent('do {/*choice*/');
       node.alternatives.forEach(function(n, i, a) {
+        context.pushCode('/*alternative ' + (i+1) + '*/');
         // Для каждой альтернативы набор переменных свой
         generate(n, context.child(context.sp, objects.clone(context.env), null));
         // Если элемент не последний в массиве, то генерируем проверку
@@ -431,15 +512,16 @@ function generateCCode(ast, options) {
           context.pushCode('if (!isFailed(' + context.resultStack.pop() + ')) { break; }', '');
         }
       });
-      context.dedent('} while (0);');
+      context.dedent('} while (0);/*choice*/');
     },
 
     sequence: function(node, context) {
       context.pushCode(context.pushPos());
-      context.indent('do {');
+      context.indent('do {/*sequence*/');
       var first;
       var sp = context.resultStack.sp + 1;
       node.elements.forEach(function(n, i) {
+        context.pushCode('/*element ' + (i+1) + '*/');
         // Для всех элементов последовательности набор переменных одинаковый.
         generate(n, context.child(context.sp + i + 1, context.env, null));
         if (i === 0) {
@@ -465,7 +547,7 @@ function generateCCode(ast, options) {
       var elems = context.resultStack.pop(node.elements.length);
       var beginPos = context.posStack.pop();
       if (context.action) {
-        context.pushCode(actions.add(
+        context.pushCode(ucb.addAction(
           context.action.namespace,
           objects.keys(context.env),
           context.action.code,
@@ -475,7 +557,7 @@ function generateCCode(ast, options) {
         elems.unshift('ctx', beginPos + '.offset', elems.length);
         context.pushCode(context.resultStack.push('wrap(' + elems.join(', ') + ')')); 
       }
-      context.dedent('} while (0);');
+      context.dedent('} while (0);/*sequence*/');
     },
 
     labeled: function(node, context) {
@@ -544,7 +626,7 @@ function generateCCode(ast, options) {
       if (emitCall) {
         context.pushCode(
           'if (!isFailed(' + context.resultStack.top() + ')) {',
-          '  ' + actions.add(node.namespace, objects.keys(env), node.code, context.resultStack.range(sp)) + ';',
+          '  ' + ucb.addAction(node.namespace, objects.keys(env), node.code, context.resultStack.range(sp)) + ';',
           '}'
         );
       }
@@ -590,7 +672,8 @@ function generateCCode(ast, options) {
     }
   });
 
-  console.log(generate(ast));
+  ast.files = generate(ast);
+  return ast.files;
 }
 
 module.exports = generateCCode;
