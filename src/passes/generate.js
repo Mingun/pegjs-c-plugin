@@ -53,8 +53,8 @@ function generateCCode(ast, options) {
   function makeStack(varName, type) {
     function s(i) { return varName + i; }
     return {
-      sp:    -1,
-      maxSp: -1,
+      sp:    -1,///< Номер последней занятой переменной в стеке.
+      maxSp: -1,///< Максимальное количество одновременно используемых переменных стека.
 
       push: function(exprCode) {
         var code = s(++this.sp) + ' = ' + exprCode + ';';
@@ -94,7 +94,18 @@ function generateCCode(ast, options) {
         return type + ' ' + arrays.map(arrays.range(0, this.maxSp + 1), s).join(', ') + ';';
       },
       range: function(sp) {
+        if (sp < 0) throw Error('`sp < 0`: (sp, this.sp) == ['+sp+'; '+this.sp+']');
         return arrays.map(arrays.range(sp, this.sp + 1), s);
+      },
+      /// Возвращает массив с именами переменных для вызова функции
+      /// @env Отображение имен меток результатов на позицию в стеке, где он хранится.
+      /// @return список имен переменных этого стека.
+      args: function(env) {
+        var r = [];
+        for (var k in env) if (env.hasOwnProperty(k)) {
+          r.push(s(env[k]));
+        }
+        return r;
       },
       result: function() { return s(0); },
     };
@@ -249,7 +260,7 @@ function generateCCode(ast, options) {
 
     function make(sp, env, action) {
       return {
-        sp:     sp,    // stack pointer
+        sp:     sp,    ///< Номер первой переменной для этого контекста.
         env:    env,   // mapping of label names to stack positions
         action: action,// action nodes pass themselves to children here
 
@@ -305,8 +316,10 @@ function generateCCode(ast, options) {
   function generateSemanticPredicate(namespace, code, negative, context) {
     var f = context.resultStack.push('&FAILED');
     var n = context.resultStack.replace('&NIL');
+    var params = objects.keys(context.env);
+    var args = context.resultStack.args(context.env);
     context.pushCode(
-      'if (' + (negative ? '!' : '') + ucb.addPredicate(namespace, objects.keys(context.env), code) + ') {',
+      'if (' + (negative ? '!' : '') + ucb.addPredicate(namespace, params, code, args) + ') {',
       '  ' + (negative ? f : n),
       '} else {',
       '  ' + (negative ? n : f),
@@ -561,7 +574,7 @@ function generateCCode(ast, options) {
           ''
         );
       });
-      var args = context.resultStack.range(sp);
+      var args = context.resultStack.args(context.env);
       var elems = context.resultStack.pop(node.elements.length);
       var beginPos = context.posStack.pop();
       if (context.action) {
@@ -633,20 +646,25 @@ function generateCCode(ast, options) {
     action: function(node, context) {
       var env = objects.clone(context.env);
       // Для того, чтобы не генерировать лишний вызов wrap у последовательности элементов, вызов
-      // функции генерируется прямо в последовательности, ВМЕСТО wrap.
+      // функции генерируется прямо в последовательности, ВМЕСТО wrap. А это значит, что здесь его
+      // генерировать не надо.
       var emitCall = node.expression.type !== "sequence";
 
+      // Если вызов генерируется, нужно сохранить позицию перед выполнением пользовательского кода,
+      // чтобы он имел к ней доступ.
       if (emitCall) {
-        context.pushPos();
+        context.pushCode(context.pushPos());
       }
-      var sp = context.sp;
-      generate(node.expression, context.child(sp, env, node));
+      generate(node.expression, context.child(context.sp, env, node));
       if (emitCall) {
+        var params = objects.keys(env);
+        var args = context.resultStack.args(env);
         context.pushCode(
           'if (!isFailed(' + context.resultStack.top() + ')) {',
-          '  ' + ucb.addAction(node.namespace, objects.keys(env), node.code, context.resultStack.range(sp)) + ';',
+          '  ' + ucb.addAction(node.namespace, params, node.code, args) + ';',
           '}'
         );
+        context.popPos();
       }
     },
 
