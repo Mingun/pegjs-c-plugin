@@ -128,6 +128,8 @@ function generateCCode(ast, options) {
         p.unshift('struct Context* context');
         return retType + ' ' + n1(i, p);
       }
+      function declare(v, i) { return n2(v, i) + ';'; }
+
       var storage = [];
       return {
         add: function(namespace, params, code, args) {
@@ -145,11 +147,14 @@ function generateCCode(ast, options) {
         /// Получает предварительные объявления всех функций в указанном пространстве имен.
         /// @return Массив с предварительными объявлениями функций.
         declares: function(ns) {
+          if (arguments.length < 1) {
+            return storage.map(declare);
+          }
           var r = [];
           for (var i = 0; i < storage.length; ++i) {
             var v = storage[i];
             if (ns === v.namespace) {
-              r.push(n2(v, i) + ';');
+              r.push(declare(v, i));
             }
           }
           return r;
@@ -215,6 +220,15 @@ function generateCCode(ast, options) {
         }
         return r;
       },
+      /// Заполняет указанный CodeBuilder кодом предварительных объявлений функций
+      /// для действий и предикатов.
+      /// @b CodeBuilder
+      declares: function(b) {
+        b.push('/*~~~~~~~~~~~ PREDICATES FORWARD DECLARATIONS ~~~~~~~~~~~~*/');
+        b.pushAll(predicates.declares());
+        b.push('/*~~~~~~~~~~~~~ ACTIONS FORWARD DECLARATIONS ~~~~~~~~~~~~~*/');
+        b.pushAll(actions.declares());
+      }
     };
   }
   function makeContext(code) {
@@ -391,7 +405,11 @@ function generateCCode(ast, options) {
       var b = new CodeBuilder([
         '/*Parser*/',
         '#include "peg-internal.h"',
+        '',
       ]);
+      // Предварительные объявления функций для вызова пользовательского кода.
+      ucb.declares(b);
+
       b.push('/*~~~~~~~~~~~~~~~~~~~~~~ LITERALS ~~~~~~~~~~~~~~~~~~~~~~~*/');
       b.pushAll(literals.vars());
       b.push('/*~~~~~~~~~~~~~~~~~~~~ CHAR CLASSES ~~~~~~~~~~~~~~~~~~~~~*/');
