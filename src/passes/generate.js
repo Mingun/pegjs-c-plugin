@@ -550,11 +550,10 @@ function generateCCode(ast, options) {
       context.pushCode(context.pushPos());
       context.indent('do {/*sequence*/');
       var first;
-      var sp = context.resultStack.sp + 1;
       node.elements.forEach(function(n, i) {
         context.pushCode('/*element ' + (i+1) + '*/');
         // Для всех элементов последовательности набор переменных одинаковый.
-        generate(n, context.child(context.sp + i + 1, context.env, null));
+        generate(n, context.child(context.sp + i, context.env, null));
         if (i === 0) {
           first = context.resultStack.top();
         }
@@ -564,7 +563,7 @@ function generateCCode(ast, options) {
           'if (isFailed(' + context.resultStack.top() + ')) {'
         );
         context.pushCode.apply(context,
-          context.resultStack.range(sp).map(function(r) { return '  freeResult(' + r + ');'; })
+          context.resultStack.range(context.sp + 1).reverse().map(function(r) { return '  freeResult(' + r + ');'; })
         );
         context.pushCode(
           '  memcpy(&ctx->current, &' + context.posStack.top() + ', sizeof(struct Location));',
